@@ -62,8 +62,9 @@ JARVIS pairs **Firebase Cloud Firestore** (holding verified college records) wit
 | `GET` | `/admissions` | Admission procedures, eligibility, and required documents |
 | `GET` | `/placements` | Placement packages, top recruiters, and training programs |
 | `POST` | `/ask` | AI question-answering endpoint with RAG context injection |
-| `POST` | `/voice` | Voice endpoint: accepts audio -> Gemini STT -> JARVIS answer -> Gemini TTS (`?format=audio` returns 16kHz stereo WAV) |
+| `POST` | `/voice` | Voice endpoint: accepts audio -> Gemini/Groq STT -> JARVIS answer -> Gemini TTS (`?format=audio` returns 16kHz stereo WAV) |
 | `POST` | `/ask-voice` | Alias for `/voice` supporting multipart file uploads (`file` or `audio`) and JSON base64 |
+| `POST` | `/api/jarvis` | Laptop Bridge / Python client audio endpoint: accepts `.wav` via multipart `audio`, transcribes with Gemini <-> Groq Whisper fallback, answers with Gemini <-> Groq/Grok fallback, and returns `{ "answer": "..." }` |
 | `POST` | `/speech` | Direct text-to-speech synthesis via Gemini (`gemini-2.5-flash-preview-tts`) |
 
 

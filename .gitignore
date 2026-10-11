@@ -75,6 +75,7 @@ serviceAccountKey.json
 .DS_Store
 *.bak
 
-# dataconnect generated files
-.dataconnect
+# Python cache
+__pycache__/
+*.py[cod]
 

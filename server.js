@@ -58,11 +58,16 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const COLLEGE_NAME = "Navsahyadri Education Society's Group of Institutions";
 
-// Model Configurations (Pure Google Gemini Stack)
+// Model Configurations (Dual Gemini & Groq/Grok Stack with Fallback)
 const MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
-const GEMINI_STT_MODEL = process.env.GEMINI_STT_MODEL || "gemini-2.5-flash";
+const GEMINI_STT_MODEL = process.env.GEMINI_STT_MODEL || "gemini-3.5-flash-lite";
 const GEMINI_TTS_MODEL = process.env.GEMINI_TTS_MODEL || "gemini-2.5-flash-preview-tts";
 const GEMINI_TTS_VOICE = process.env.GEMINI_TTS_VOICE || "Puck";
+
+// Groq / Grok Configuration (STT: Whisper, LLM: Qwen / Llama / xAI Grok)
+const GROQ_API_KEY = process.env.GROQ_API_KEY || process.env.GROK_API_KEY || process.env.XAI_API_KEY;
+const GROQ_STT_MODEL = process.env.GROQ_STT_MODEL || "whisper-large-v3";
+const GROQ_CHAT_MODEL = process.env.GROQ_CHAT_MODEL || process.env.GROK_MODEL || "qwen/qwen3.8-27b";
 
 // Security & Parsing Middlewares
 const allowedOrigin = process.env.CORS_ORIGIN || "*";
@@ -269,7 +274,7 @@ function resampleAndCreateWav(rawPcmBuffer, srcRate = 24000, dstRate = 16000, ch
 }
 
 // ----------------------------------------------------
-// Gemini Speech-to-Text (Audio Transcription)
+// Dual Speech-to-Text: Gemini & Groq Whisper with Fallback
 // ----------------------------------------------------
 async function transcribeAudioWithGemini(audioBuffer, mimeType = "audio/wav") {
   if (!GEMINI_API_KEY) {
@@ -279,7 +284,6 @@ async function transcribeAudioWithGemini(audioBuffer, mimeType = "audio/wav") {
     throw new Error("Audio buffer is empty or too short to contain audio data.");
   }
 
-  // Ensure normalized audio MIME type
   let normalizedMime = mimeType.toLowerCase();
   if (!normalizedMime.startsWith("audio/")) {
     normalizedMime = "audio/wav";
@@ -308,11 +312,96 @@ async function transcribeAudioWithGemini(audioBuffer, mimeType = "audio/wav") {
   );
 
   const rawText = (response?.text || "").trim();
-  // Filter out silence markers or empty text
   if (rawText === "[SILENCE]" || rawText === "[]" || rawText === '""') {
     return "";
   }
   return rawText;
+}
+
+/**
+ * Transcribe audio using Groq Whisper (whisper-large-v3)
+ */
+async function transcribeAudioWithGroqWhisper(audioBuffer, mimeType = "audio/wav") {
+  if (!GROQ_API_KEY) {
+    throw new Error("GROQ_API_KEY (or GROK_API_KEY) is not configured in environment variables.");
+  }
+  if (!Buffer.isBuffer(audioBuffer) || audioBuffer.length < 44) {
+    throw new Error("Audio buffer is empty or too short to contain audio data.");
+  }
+
+  let normalizedMime = mimeType.toLowerCase();
+  if (!normalizedMime.startsWith("audio/")) {
+    normalizedMime = "audio/wav";
+  }
+
+  const blob = new Blob([audioBuffer], { type: normalizedMime });
+  const form = new FormData();
+  form.append("file", blob, "audio.wav");
+  form.append("model", GROQ_STT_MODEL);
+  form.append("temperature", "0");
+
+  const response = await withTimeout(
+    fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${GROQ_API_KEY}`
+      },
+      body: form
+    }),
+    15000,
+    "Groq Whisper transcription timed out after 15 seconds"
+  );
+
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.error?.message || `Groq Whisper HTTP ${response.status}`);
+  }
+
+  return (data.text || "").trim();
+}
+
+/**
+ * Primary Gemini STT with seamless Groq Whisper fallback (and vice versa)
+ */
+async function transcribeAudioWithFallback(audioBuffer, mimeType = "audio/wav") {
+  const errors = [];
+
+  // Attempt 1: Gemini Multimodal STT
+  if (GEMINI_API_KEY) {
+    try {
+      console.log(`[STT] Attempting transcription via Gemini (${GEMINI_STT_MODEL})...`);
+      const transcript = await transcribeAudioWithGemini(audioBuffer, mimeType);
+      if (transcript && transcript.trim().length > 0) {
+        console.log(`[STT] Gemini transcription succeeded: "${transcript}"`);
+        return { text: transcript.trim(), provider: "gemini" };
+      }
+      console.warn("[STT] Gemini returned empty/silent transcript. Trying Groq Whisper fallback...");
+    } catch (err) {
+      console.warn(`[STT] Gemini transcription failed (${err.message}). Trying Groq Whisper fallback...`);
+      errors.push(`Gemini: ${err.message}`);
+    }
+  } else {
+    errors.push("GEMINI_API_KEY not configured");
+  }
+
+  // Attempt 2: Groq Whisper STT Fallback
+  if (GROQ_API_KEY) {
+    try {
+      console.log(`[STT Fallback] Attempting transcription via Groq Whisper (${GROQ_STT_MODEL})...`);
+      const transcript = await transcribeAudioWithGroqWhisper(audioBuffer, mimeType);
+      if (transcript && transcript.trim().length > 0) {
+        console.log(`[STT Fallback] Groq Whisper transcription succeeded: "${transcript}"`);
+        return { text: transcript.trim(), provider: "groq" };
+      }
+    } catch (err) {
+      console.warn(`[STT Fallback] Groq Whisper failed: ${err.message}`);
+      errors.push(`Groq: ${err.message}`);
+    }
+  } else {
+    errors.push("GROQ_API_KEY not configured");
+  }
+
+  throw new Error(`Audio transcription failed across all providers: [${errors.join(" | ")}]`);
 }
 
 // ----------------------------------------------------
@@ -601,20 +690,89 @@ function formatAnswerForDisplay(rawText, maxChars = DEFAULT_MAX_ANSWER_CHARS) {
 }
 
 // ----------------------------------------------------
-// Core Answering Function (Shared by text & voice)
+// Core Answering Functions (Gemini & Groq/Grok with Fallback)
 // ----------------------------------------------------
-async function answerQuestion(cleanQuestion, maxChars = DEFAULT_MAX_ANSWER_CHARS) {
+
+/**
+ * Generates Jarvis answer using Groq Cloud or xAI Grok API
+ */
+async function answerQuestionWithGroq(cleanQuestion, evidence = {}, maxChars = DEFAULT_MAX_ANSWER_CHARS) {
+  if (!GROQ_API_KEY) {
+    throw new Error("GROQ_API_KEY (or GROK_API_KEY) is not configured in environment variables.");
+  }
+
+  const isXai = GROQ_API_KEY.startsWith("xai-");
+  const endpoint = isXai 
+    ? "https://api.x.ai/v1/chat/completions" 
+    : "https://api.groq.com/openai/v1/chat/completions";
+  const model = isXai ? (process.env.GROK_MODEL || "grok-beta") : GROQ_CHAT_MODEL;
+
+  const messages = [
+    {
+      role: "system",
+      content: `${SYSTEM_INSTRUCTION}
+
+Remember: Keep answers extremely brief and punchy (under 30 words, max ${maxChars} chars). Never use emojis or markdown formatting, as this will be shown on a 16x2 LCD screen.`
+    },
+    {
+      role: "user",
+      content: `<verified_college_records>
+${JSON.stringify(evidence, null, 2)}
+</verified_college_records>
+
+<student_question>
+${cleanQuestion}
+</student_question>`
+    }
+  ];
+
+  const response = await withTimeout(
+    fetch(endpoint, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${GROQ_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model,
+        messages,
+        max_tokens: 100,
+        temperature: 0.1
+      })
+    }),
+    15000,
+    "Groq chat completion timed out after 15 seconds"
+  );
+
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.error?.message || `Groq HTTP ${response.status}`);
+  }
+
+  const rawAnswer = data.choices?.[0]?.message?.content?.trim() || "";
+  const finalAnswer = rawAnswer || "This information is not currently available in the JARVIS college database.";
+  return formatAnswerForDisplay(finalAnswer, maxChars);
+}
+
+/**
+ * Generates answer with Gemini as primary, falling back to Groq/Grok if Gemini fails (or vice versa).
+ */
+async function answerQuestionWithFallback(cleanQuestion, maxChars = DEFAULT_MAX_ANSWER_CHARS) {
   // 1. Deterministic greeting check
   const instantGreeting = getGreetingResponse(cleanQuestion);
   if (instantGreeting) {
-    return formatAnswerForDisplay(instantGreeting, maxChars);
+    return { answer: formatAnswerForDisplay(instantGreeting, maxChars), provider: "local" };
   }
 
   // 2. Targeted RAG retrieval
   const evidence = await retrieveEvidence(cleanQuestion);
+  const errors = [];
 
-  // 3. Construct grounded user prompt with boundary tags
-  const userPrompt = `
+  // 3. Attempt Gemini
+  if (GEMINI_API_KEY) {
+    try {
+      console.log(`[LLM] Generating answer via Gemini (${MODEL})...`);
+      const userPrompt = `
 <verified_college_records>
 ${JSON.stringify(evidence, null, 2)}
 </verified_college_records>
@@ -624,24 +782,56 @@ ${cleanQuestion}
 </student_question>
 `;
 
-  // 4. Call Gemini with timeout and system instruction
-  const response = await withTimeout(
-    ai.models.generateContent({
-      model: MODEL,
-      contents: userPrompt,
-      config: {
-        systemInstruction: SYSTEM_INSTRUCTION,
-        temperature: 0.1,
-        maxOutputTokens: 120
-      }
-    }),
-    15000,
-    "Gemini generation request timed out after 15 seconds"
-  );
+      const response = await withTimeout(
+        ai.models.generateContent({
+          model: MODEL,
+          contents: userPrompt,
+          config: {
+            systemInstruction: SYSTEM_INSTRUCTION,
+            temperature: 0.1,
+            maxOutputTokens: 120
+          }
+        }),
+        15000,
+        "Gemini generation request timed out after 15 seconds"
+      );
 
-  const rawAnswer = response?.text?.trim() || "";
-  const finalAnswer = rawAnswer || "This information is not currently available in the JARVIS college database.";
-  return formatAnswerForDisplay(finalAnswer, maxChars);
+      const rawAnswer = response?.text?.trim() || "";
+      const finalAnswer = rawAnswer || "This information is not currently available in the JARVIS college database.";
+      console.log(`[LLM] Gemini generation succeeded.`);
+      return { answer: formatAnswerForDisplay(finalAnswer, maxChars), provider: "gemini" };
+    } catch (err) {
+      console.warn(`[LLM] Gemini generation failed (${err.message}). Trying Groq/Grok fallback...`);
+      errors.push(`Gemini: ${err.message}`);
+    }
+  } else {
+    errors.push("GEMINI_API_KEY not configured");
+  }
+
+  // 4. Fallback to Groq / Grok
+  if (GROQ_API_KEY) {
+    try {
+      console.log(`[LLM Fallback] Generating answer via Groq/Grok (${GROQ_CHAT_MODEL})...`);
+      const answer = await answerQuestionWithGroq(cleanQuestion, evidence, maxChars);
+      console.log(`[LLM Fallback] Groq generation succeeded.`);
+      return { answer, provider: "groq" };
+    } catch (err) {
+      console.warn(`[LLM Fallback] Groq generation failed: ${err.message}`);
+      errors.push(`Groq: ${err.message}`);
+    }
+  } else {
+    errors.push("GROQ_API_KEY not configured");
+  }
+
+  throw new Error(`AI generation failed across all providers: [${errors.join(" | ")}]`);
+}
+
+/**
+ * Backward-compatible wrapper returning string answer
+ */
+async function answerQuestion(cleanQuestion, maxChars = DEFAULT_MAX_ANSWER_CHARS) {
+  const result = await answerQuestionWithFallback(cleanQuestion, maxChars);
+  return result.answer;
 }
 
 // ====================================================
@@ -657,8 +847,30 @@ app.get("/", (req, res) => {
     model: MODEL,
     stt_model: GEMINI_STT_MODEL,
     tts_model: GEMINI_TTS_MODEL,
+    fallback_enabled: true,
+    groq_stt_model: GROQ_STT_MODEL,
+    groq_chat_model: GROQ_CHAT_MODEL,
+    ai_providers: {
+      gemini: !!GEMINI_API_KEY,
+      groq_grok: !!GROQ_API_KEY
+    },
+    endpoints: [
+      "/ask",
+      "/voice",
+      "/ask-voice",
+      "/api/jarvis",
+      "/speech",
+      "/college",
+      "/departments",
+      "/courses",
+      "/locations",
+      "/faculty",
+      "/admissions",
+      "/placements",
+      "/health"
+    ],
     voice_support: true,
-    speech_engine: "Google Gemini"
+    speech_engine: "Google Gemini + Groq Whisper Dual Stack"
   });
 });
 
@@ -859,24 +1071,22 @@ async function handleVoiceRequest(req, res) {
 
     console.log(`Received audio for voice query: ${audioBuffer.length} bytes, MIME: ${mimeType}`);
 
-    // Step A: Transcribe audio with Gemini Multimodal STT
+    // Step A: Transcribe audio with Dual STT Fallback (Gemini <-> Groq Whisper)
     let recognizedQuestion = "";
+    let sttProvider = "gemini";
     try {
-      recognizedQuestion = await transcribeAudioWithGemini(audioBuffer, mimeType);
+      const sttResult = await transcribeAudioWithFallback(audioBuffer, mimeType);
+      recognizedQuestion = sttResult.text;
+      sttProvider = sttResult.provider;
     } catch (sttErr) {
-      console.error("GEMINI STT ERROR:", sttErr.message);
-      const sttMsg = (sttErr.message || "").toLowerCase();
-      const isQuota = sttMsg.includes("resource_exhausted") || sttMsg.includes("quota exceeded") || sttMsg.includes("429");
-      const status = isQuota ? 429 : 422;
-      recordActivity({ type: "error", source, question: "(STT failed)", latency: Date.now() - t0, status, error: sttErr.message });
-      return res.status(status).json({
-        error: isQuota
-          ? "Gemini Speech-to-Text quota exceeded. Please verify your Gemini API plan."
-          : "Failed to transcribe audio with Gemini: " + sttErr.message
+      console.error("STT ERROR (Both Gemini & Groq failed):", sttErr.message);
+      recordActivity({ type: "error", source, question: "(STT failed)", latency: Date.now() - t0, status: 422, error: sttErr.message });
+      return res.status(422).json({
+        error: "Failed to transcribe audio: " + sttErr.message
       });
     }
 
-    console.log("RECOGNIZED QUESTION (Gemini):", recognizedQuestion);
+    console.log(`RECOGNIZED QUESTION [${sttProvider}]:`, recognizedQuestion);
 
     if (!recognizedQuestion || recognizedQuestion.trim() === "") {
       const err = "Speech could not be recognized or audio is silent. Please record clearly and try again.";
@@ -884,10 +1094,11 @@ async function handleVoiceRequest(req, res) {
       return res.status(422).json({ error: err });
     }
 
-    // Step B: Answer question with JARVIS college logic
+    // Step B: Answer question with Dual LLM Fallback (Gemini <-> Groq/Grok)
     const maxChars = parseInt(req.body?.max_chars || req.query?.max_chars || DEFAULT_MAX_ANSWER_CHARS, 10);
-    const answer = await answerQuestion(recognizedQuestion, maxChars);
-    console.log("JARVIS ANSWER:", answer);
+    const answerResult = await answerQuestionWithFallback(recognizedQuestion, maxChars);
+    const answer = answerResult.answer;
+    console.log(`JARVIS ANSWER [${answerResult.provider}]:`, answer);
 
     // Step C: Generate speech audio with Gemini TTS
     let wavBuffer = null;
@@ -955,6 +1166,8 @@ async function handleVoiceRequest(req, res) {
       audio_notice: ttsNotice || undefined,
       sample_rate: 16000,
       channels: 2,
+      stt_provider: sttProvider,
+      llm_provider: answerResult.provider,
       speech_engine: "Google Gemini"
     });
 
@@ -976,8 +1189,112 @@ async function handleVoiceRequest(req, res) {
   }
 }
 
+// ====================================================
+// PYTHON LAPTOP BRIDGE ENDPOINT (POST /api/jarvis)
+// Receives .wav audio from Python bridge, transcribes via
+// Gemini STT <-> Groq Whisper fallback, generates Jarvis response
+// via Gemini <-> Groq/Grok fallback, and returns { "answer": "..." }.
+// ====================================================
+async function handleJarvisQuery(req, res) {
+  const t0 = Date.now();
+  const source = "Python Bridge / Laptop";
+
+  try {
+    let audioBuffer = null;
+    let mimeType = "audio/wav";
+
+    // 1. Multipart file upload ('audio' or 'file')
+    if (req.file) {
+      audioBuffer = req.file.buffer;
+      mimeType = req.file.mimetype || "audio/wav";
+    } else if (req.files && req.files.length > 0) {
+      const foundAudio = req.files.find(f => f.fieldname === "audio") || req.files[0];
+      audioBuffer = foundAudio.buffer;
+      mimeType = foundAudio.mimetype || "audio/wav";
+    }
+    // 2. Base64 JSON payload
+    else if (req.body && req.body.audio) {
+      const base64Data = req.body.audio.replace(/^data:audio\/\w+;base64,/, "");
+      audioBuffer = Buffer.from(base64Data, "base64");
+      mimeType = req.body.mime_type || "audio/wav";
+    }
+    // 3. Raw binary body
+    else if (Buffer.isBuffer(req.body) && req.body.length > 0) {
+      audioBuffer = req.body;
+      mimeType = req.headers["content-type"] || "audio/wav";
+    }
+
+    // Step 1: Check if audio was sent
+    if (!audioBuffer || audioBuffer.length === 0) {
+      recordActivity({ type: "error", source, question: "(no audio)", latency: Date.now() - t0, status: 400, error: "No audio received" });
+      return res.status(400).json({ answer: "Error: No audio received" });
+    }
+
+    console.log(`[POST /api/jarvis] Received audio from Python bridge: ${audioBuffer.length} bytes`);
+
+    // Step 2: Convert Speech to Text using Gemini <-> Groq Whisper Fallback
+    let recognizedQuestion = "";
+    let sttProvider = "gemini";
+    try {
+      const sttRes = await transcribeAudioWithFallback(audioBuffer, mimeType);
+      recognizedQuestion = sttRes.text;
+      sttProvider = sttRes.provider;
+    } catch (err) {
+      console.error("[POST /api/jarvis] STT failed:", err.message);
+      recordActivity({ type: "error", source, question: "(STT failed)", latency: Date.now() - t0, status: 500, error: err.message });
+      return res.status(500).json({ answer: "Backend processing error: failed to transcribe voice." });
+    }
+
+    console.log(`[POST /api/jarvis] User asked [via ${sttProvider}]: ${recognizedQuestion}`);
+
+    if (!recognizedQuestion || recognizedQuestion.trim() === "") {
+      recordActivity({ type: "voice", source, question: "(silence)", answer: "I didn't catch that.", latency: Date.now() - t0, status: 200 });
+      return res.json({ answer: "I didn't catch that.", question: "" });
+    }
+
+    // Step 3: Generate Jarvis Answer using Gemini <-> Groq/Grok Fallback
+    const maxChars = parseInt(req.body?.max_chars || req.query?.max_chars || DEFAULT_MAX_ANSWER_CHARS, 10);
+    let jarvisAnswer = "";
+    let llmProvider = "gemini";
+    try {
+      const answerRes = await answerQuestionWithFallback(recognizedQuestion, maxChars);
+      jarvisAnswer = answerRes.answer;
+      llmProvider = answerRes.provider;
+    } catch (err) {
+      console.error("[POST /api/jarvis] Answer generation failed:", err.message);
+      recordActivity({ type: "error", source, question: recognizedQuestion, latency: Date.now() - t0, status: 500, error: err.message });
+      return res.status(500).json({ answer: "Backend processing error: failed to generate response." });
+    }
+
+    console.log(`[POST /api/jarvis] Jarvis answered [via ${llmProvider}]: ${jarvisAnswer}`);
+
+    recordActivity({
+      type: "voice",
+      source,
+      question: recognizedQuestion,
+      answer: jarvisAnswer,
+      latency: Date.now() - t0,
+      status: 200
+    });
+
+    // Step 4: Return JSON format expected by laptop bridge
+    return res.json({
+      answer: jarvisAnswer,
+      question: recognizedQuestion,
+      stt_provider: sttProvider,
+      llm_provider: llmProvider
+    });
+
+  } catch (e) {
+    console.error("[POST /api/jarvis] Unhandled error:", e.message);
+    recordActivity({ type: "error", source, question: "(exception)", latency: Date.now() - t0, status: 500, error: e.message });
+    return res.status(500).json({ answer: "Backend processing error." });
+  }
+}
+
 app.post("/voice", upload.any(), handleVoiceRequest);
 app.post("/ask-voice", upload.any(), handleVoiceRequest);
+app.post("/api/jarvis", upload.any(), handleJarvisQuery);
 
 // ====================================================
 // DIRECT TEXT-TO-SPEECH (POST /speech)
@@ -1066,16 +1383,18 @@ if (require.main === module) {
   app.listen(PORT, () => {
     console.log("");
     console.log("=================================");
-    console.log("JARVIS PURE GEMINI SERVER READY");
+    console.log("JARVIS HYBRID AI SERVER READY");
     console.log("=================================");
     console.log(`Server URL:    http://localhost:${PORT}`);
     console.log(`College:       ${COLLEGE_NAME}`);
-    console.log(`Q&A Model:     ${MODEL}`);
-    console.log(`STT Model:     ${GEMINI_STT_MODEL}`);
-    console.log(`TTS Model:     ${GEMINI_TTS_MODEL}`);
-    console.log(`TTS Voice:     ${GEMINI_TTS_VOICE}`);
+    console.log(`Primary LLM:   ${MODEL} (Gemini)`);
+    console.log(`Fallback LLM:  ${GROQ_CHAT_MODEL} (Groq/Grok)`);
+    console.log(`Primary STT:   ${GEMINI_STT_MODEL} (Gemini)`);
+    console.log(`Fallback STT:  ${GROQ_STT_MODEL} (Groq Whisper)`);
+    console.log(`TTS Engine:    ${GEMINI_TTS_MODEL} (${GEMINI_TTS_VOICE})`);
+    console.log(`Bridge Route:  POST /api/jarvis`);
     console.log(`Rate Limit:    60 req/min per IP`);
-    console.log(`Speech Engine: Google Gemini (100% Native)`);
+    console.log(`Fallback Mode: Active (Gemini <-> Groq/Grok)`);
     console.log("=================================");
     console.log("");
   });
