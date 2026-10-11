@@ -1280,6 +1280,8 @@ async function handleJarvisQuery(req, res) {
     // Step 4: Return JSON format expected by laptop bridge
     return res.json({
       answer: jarvisAnswer,
+      response: jarvisAnswer,
+      text: jarvisAnswer,
       question: recognizedQuestion,
       stt_provider: sttProvider,
       llm_provider: llmProvider
@@ -1292,9 +1294,31 @@ async function handleJarvisQuery(req, res) {
   }
 }
 
+// Voice and Jarvis Endpoint Aliases (Ensures bridge scripts never 404 due to path variation)
+const jarvisAudioRoutes = [
+  "/api/jarvis",
+  "/jarvis",
+  "/api/voice",
+  "/api/ask-voice",
+  "/api/audio",
+  "/audio",
+  "/api/chat",
+  "/chat"
+];
+
+jarvisAudioRoutes.forEach(route => {
+  app.post(route, upload.any(), handleJarvisQuery);
+  app.get(route, (req, res) => {
+    res.json({
+      status: "ready",
+      route,
+      usage: "POST audio file (.wav) via multipart/form-data with key 'audio' or 'file'"
+    });
+  });
+});
+
 app.post("/voice", upload.any(), handleVoiceRequest);
 app.post("/ask-voice", upload.any(), handleVoiceRequest);
-app.post("/api/jarvis", upload.any(), handleJarvisQuery);
 
 // ====================================================
 // DIRECT TEXT-TO-SPEECH (POST /speech)
@@ -1348,8 +1372,10 @@ app.post("/speech", async (req, res) => {
 
 // 404 CATCH-ALL
 app.use((req, res) => {
+  console.warn(`[404 NOT FOUND] ${req.method} ${req.originalUrl || req.url}`);
   res.status(404).json({
-    error: "Endpoint not found",
+    error: `Endpoint not found: ${req.method} ${req.originalUrl || req.url}`,
+    answer: "Error: Endpoint not found on backend. Please use POST /api/jarvis",
     availableEndpoints: [
       "GET /",
       "GET /health",
@@ -1361,6 +1387,7 @@ app.use((req, res) => {
       "GET /admissions",
       "GET /placements",
       "POST /ask",
+      "POST /api/jarvis",
       "POST /voice",
       "POST /ask-voice",
       "POST /speech"
