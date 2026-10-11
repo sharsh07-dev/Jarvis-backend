@@ -1,0 +1,39 @@
+{
+  "departments": [
+    {
+      "name": "Computer Engineering",
+      "short_name": "Computer",
+      "hod": "T. D. Kolhe"
+    },
+    {
+      "name": "Artificial Intelligence and Machine Learning",
+      "short_name": "AIML",
+      "hod": "Indranil Mukherjee"
+    },
+    {
+      "name": "Artificial Intelligence and Data Science",
+      "short_name": "AIDS",
+      "hod": "Saloni Shah"
+    },
+    {
+      "name": "Electrical Engineering",
+      "short_name": "Electrical",
+      "hod": ""
+    },
+    {
+      "name": "Electronics and Telecommunication Engineering",
+      "short_name": "ENTC",
+      "hod": ""
+    },
+    {
+      "name": "Civil Engineering",
+      "short_name": "Civil",
+      "hod": ""
+    },
+    {
+      "name": "Mechanical Engineering",
+      "short_name": "Mechanical",
+      "hod": ""
+    }
+  ]
+}
