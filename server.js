@@ -56,8 +56,13 @@ const db = getFirestore();
 // ----------------------------------------------------
 const app = express();
 const PORT = process.env.PORT || 3000;
-const MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
 const COLLEGE_NAME = "Navsahyadri Education Society's Group of Institutions";
+
+// Model Configurations (Pure Google Gemini Stack)
+const MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
+const GEMINI_STT_MODEL = process.env.GEMINI_STT_MODEL || "gemini-2.5-flash";
+const GEMINI_TTS_MODEL = process.env.GEMINI_TTS_MODEL || "gemini-2.5-flash-preview-tts";
+const GEMINI_TTS_VOICE = process.env.GEMINI_TTS_VOICE || "Puck";
 
 // Security & Parsing Middlewares
 const allowedOrigin = process.env.CORS_ORIGIN || "*";
@@ -105,24 +110,13 @@ function rateLimiter(req, res, next) {
 app.use(rateLimiter);
 
 // ----------------------------------------------------
-// Gemini AI & Groq Audio Client Configuration
+// Shared Google Gemini Client
 // ----------------------------------------------------
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 if (!GEMINI_API_KEY) {
   console.warn("WARNING: GEMINI_API_KEY is not defined in environment variables.");
 }
 const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
-
-const GROQ_API_KEY = process.env.GROQ_API_KEY;
-const GROQ_STT_URL = "https://api.groq.com/openai/v1/audio/transcriptions";
-const GROQ_TTS_URL = "https://api.groq.com/openai/v1/audio/speech";
-const GROQ_STT_MODEL = process.env.GROQ_STT_MODEL || "whisper-large-v3-turbo";
-const GROQ_TTS_MODEL = process.env.GROQ_TTS_MODEL || "canopylabs/orpheus-v1-english";
-const GROQ_TTS_VOICE = process.env.GROQ_TTS_VOICE || "troy";
-
-if (!GROQ_API_KEY) {
-  console.warn("WARNING: GROQ_API_KEY is not defined in environment variables. Voice endpoints will be disabled until set.");
-}
 
 // Helper promise for timeouts
 function withTimeout(promise, ms, timeoutMessage) {
@@ -134,6 +128,195 @@ function withTimeout(promise, ms, timeoutMessage) {
     promise,
     timeoutPromise
   ]).finally(() => clearTimeout(timer));
+}
+
+// ----------------------------------------------------
+// Audio Processing Utilities (Resampling & WAV Packaging)
+// ----------------------------------------------------
+
+/**
+ * Resamples raw 16-bit linear PCM from srcRate (typically 24 kHz) to dstRate (16 kHz)
+ * and packages it into a standard, frame-aligned RIFF/WAVE header.
+ *
+ * @param {Buffer} rawPcmBuffer - Source PCM16 little-endian bytes
+ * @param {number} srcRate - Source sample rate in Hz (default: 24000)
+ * @param {number} dstRate - Target sample rate in Hz (default: 16000)
+ * @param {number} channels - Target channels (1 = mono, 2 = stereo for ESP32/bridge)
+ * @returns {Buffer} Standard WAV audio buffer
+ */
+function resampleAndCreateWav(rawPcmBuffer, srcRate = 24000, dstRate = 16000, channels = 2) {
+  if (!Buffer.isBuffer(rawPcmBuffer) || rawPcmBuffer.length < 2) {
+    throw new Error("Invalid or empty raw PCM buffer provided for WAV encoding.");
+  }
+
+  const numSrcSamples = Math.floor(rawPcmBuffer.length / 2);
+  const srcSamples = new Int16Array(numSrcSamples);
+  for (let i = 0; i < numSrcSamples; i++) {
+    srcSamples[i] = rawPcmBuffer.readInt16LE(i * 2);
+  }
+
+  let finalSamples;
+  let numFinalSamples;
+
+  if (srcRate === dstRate) {
+    finalSamples = srcSamples;
+    numFinalSamples = numSrcSamples;
+  } else {
+    numFinalSamples = Math.round(numSrcSamples * dstRate / srcRate);
+    finalSamples = new Int16Array(numFinalSamples);
+    const ratio = srcRate / dstRate;
+
+    for (let i = 0; i < numFinalSamples; i++) {
+      const srcPos = i * ratio;
+      const srcIdx = Math.floor(srcPos);
+      const frac = srcPos - srcIdx;
+      const s0 = srcSamples[srcIdx];
+      const s1 = srcIdx + 1 < numSrcSamples ? srcSamples[srcIdx + 1] : s0;
+      const interpolated = Math.round(s0 + frac * (s1 - s0));
+      finalSamples[i] = Math.max(-32768, Math.min(32767, interpolated));
+    }
+  }
+
+  // Construct standard 44-byte RIFF/WAVE container
+  const bytesPerSample = 2; // 16-bit PCM
+  const dataSize = numFinalSamples * channels * bytesPerSample;
+  const wavBuffer = Buffer.alloc(44 + dataSize);
+
+  // RIFF header
+  wavBuffer.write("RIFF", 0);
+  wavBuffer.writeUInt32LE(36 + dataSize, 4);
+  wavBuffer.write("WAVE", 8);
+
+  // fmt subchunk
+  wavBuffer.write("fmt ", 12);
+  wavBuffer.writeUInt32LE(16, 16);                            // Subchunk1Size (16 for PCM)
+  wavBuffer.writeUInt16LE(1, 20);                             // AudioFormat (1 = PCM)
+  wavBuffer.writeUInt16LE(channels, 22);                      // NumChannels (1 = mono, 2 = stereo)
+  wavBuffer.writeUInt32LE(dstRate, 24);                       // SampleRate (16000)
+  wavBuffer.writeUInt32LE(dstRate * channels * bytesPerSample, 28); // ByteRate
+  wavBuffer.writeUInt16LE(channels * bytesPerSample, 32);     // BlockAlign
+  wavBuffer.writeUInt16LE(16, 34);                            // BitsPerSample
+
+  // data subchunk
+  wavBuffer.write("data", 36);
+  wavBuffer.writeUInt32LE(dataSize, 40);
+
+  // Write samples with channel replication if stereo
+  let offset = 44;
+  for (let i = 0; i < numFinalSamples; i++) {
+    const sample = finalSamples[i];
+    if (channels === 2) {
+      wavBuffer.writeInt16LE(sample, offset);     // Left channel
+      wavBuffer.writeInt16LE(sample, offset + 2); // Right channel
+      offset += 4;
+    } else {
+      wavBuffer.writeInt16LE(sample, offset);
+      offset += 2;
+    }
+  }
+
+  return wavBuffer;
+}
+
+// ----------------------------------------------------
+// Gemini Speech-to-Text (Audio Transcription)
+// ----------------------------------------------------
+async function transcribeAudioWithGemini(audioBuffer, mimeType = "audio/wav") {
+  if (!GEMINI_API_KEY) {
+    throw new Error("GEMINI_API_KEY is not configured in environment variables.");
+  }
+  if (!Buffer.isBuffer(audioBuffer) || audioBuffer.length < 44) {
+    throw new Error("Audio buffer is empty or too short to contain audio data.");
+  }
+
+  // Ensure normalized audio MIME type
+  let normalizedMime = mimeType.toLowerCase();
+  if (!normalizedMime.startsWith("audio/")) {
+    normalizedMime = "audio/wav";
+  }
+
+  const response = await withTimeout(
+    ai.models.generateContent({
+      model: GEMINI_STT_MODEL,
+      contents: [
+        {
+          inlineData: {
+            mimeType: normalizedMime,
+            data: audioBuffer.toString("base64")
+          }
+        },
+        {
+          text: "Transcribe this audio recording verbatim. Output only the exact transcribed speech, nothing else. If the audio is silent or unintelligible, return an empty string."
+        }
+      ],
+      config: {
+        temperature: 0.0
+      }
+    }),
+    15000,
+    "Gemini audio transcription timed out after 15 seconds"
+  );
+
+  const rawText = (response?.text || "").trim();
+  // Filter out silence markers or empty text
+  if (rawText === "[SILENCE]" || rawText === "[]" || rawText === '""') {
+    return "";
+  }
+  return rawText;
+}
+
+// ----------------------------------------------------
+// Gemini Text-to-Speech (Audio Generation)
+// ----------------------------------------------------
+async function generateSpeechWithGemini(text, targetSampleRate = 16000, targetChannels = 2) {
+  if (!GEMINI_API_KEY) {
+    throw new Error("GEMINI_API_KEY is not configured in environment variables.");
+  }
+
+  const cleanText = text.replace(/[*_#`[\]]/g, "").trim();
+  if (!cleanText) {
+    throw new Error("Cannot generate speech from empty text.");
+  }
+
+  const response = await withTimeout(
+    ai.models.generateContent({
+      model: GEMINI_TTS_MODEL,
+      contents: cleanText,
+      config: {
+        responseModalities: ["AUDIO"],
+        speechConfig: {
+          voiceConfig: {
+            prebuiltVoiceConfig: {
+              voiceName: GEMINI_TTS_VOICE
+            }
+          }
+        }
+      }
+    }),
+    15000,
+    "Gemini speech generation timed out after 15 seconds"
+  );
+
+  const candidate = response?.candidates?.[0];
+  const part = candidate?.content?.parts?.[0];
+  const inlineData = part?.inlineData;
+
+  if (!inlineData || !inlineData.data) {
+    throw new Error("Gemini TTS response did not contain inline audio data.");
+  }
+
+  const rawPcm = Buffer.from(inlineData.data, "base64");
+  if (rawPcm.length === 0) {
+    throw new Error("Gemini returned zero audio bytes.");
+  }
+
+  // Parse source sample rate from mimeType (e.g. audio/L16;codec=pcm;rate=24000)
+  const mimeType = inlineData.mimeType || "";
+  const rateMatch = mimeType.match(/rate=(\d+)/);
+  const srcRate = rateMatch ? parseInt(rateMatch[1], 10) : 24000;
+
+  // Convert to valid 16 kHz WAV (stereo for ESP32/bridge playback)
+  return resampleAndCreateWav(rawPcm, srcRate, targetSampleRate, targetChannels);
 }
 
 // ----------------------------------------------------
@@ -358,107 +541,12 @@ ${cleanQuestion}
         maxOutputTokens: 250
       }
     }),
-    12000,
-    "Gemini generation request timed out after 12 seconds"
+    15000,
+    "Gemini generation request timed out after 15 seconds"
   );
 
   const rawAnswer = response?.text?.trim() || "";
   return rawAnswer || "This information is not currently available in the JARVIS college database.";
-}
-
-// ----------------------------------------------------
-// Groq Audio Services (STT & TTS)
-// ----------------------------------------------------
-
-/**
- * Transcribe audio buffer using Groq Whisper API
- */
-async function transcribeAudioWithGroq(audioBuffer, mimeType = "audio/wav", filename = "audio.wav") {
-  if (!GROQ_API_KEY) {
-    throw new Error("GROQ_API_KEY is not configured in environment variables.");
-  }
-
-  const formData = new FormData();
-  formData.append("file", new Blob([audioBuffer], { type: mimeType }), filename);
-  formData.append("model", GROQ_STT_MODEL);
-  formData.append("response_format", "json");
-
-  const response = await withTimeout(
-    fetch(GROQ_STT_URL, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${GROQ_API_KEY}`
-      },
-      body: formData
-    }),
-    12000,
-    "Groq transcription request timed out after 12 seconds"
-  );
-
-  if (!response.ok) {
-    const errorBody = await response.text();
-    console.error("GROQ TRANSCRIPTION ERROR:", response.status, errorBody);
-    throw new Error(`Groq transcription failed (${response.status}): ${errorBody}`);
-  }
-
-  const data = await response.json();
-  return (data.text || "").trim();
-}
-
-/**
- * Generate speech audio from text using Groq Orpheus API
- */
-async function generateSpeechWithGroq(text) {
-  if (!GROQ_API_KEY) {
-    throw new Error("GROQ_API_KEY is not configured in environment variables.");
-  }
-
-  // Sanitize text and observe Canopy Labs Orpheus 200 character limit
-  const clean = text.replace(/[*_#`[\]]/g, "").trim();
-  let inputText = clean;
-  if (clean.length > 195) {
-    const firstSentence = clean.split(/[.?!]/)[0];
-    if (firstSentence && firstSentence.length <= 195 && firstSentence.length >= 25) {
-      inputText = firstSentence + ".";
-    } else {
-      const truncated = clean.slice(0, 192);
-      const lastSpace = truncated.lastIndexOf(" ");
-      inputText = (lastSpace > 0 ? truncated.slice(0, lastSpace) : truncated) + "...";
-    }
-  }
-
-  const response = await withTimeout(
-    fetch(GROQ_TTS_URL, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${GROQ_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: GROQ_TTS_MODEL,
-        input: inputText,
-        voice: GROQ_TTS_VOICE,
-        response_format: "wav"
-      })
-    }),
-    12000,
-    "Groq speech generation request timed out after 12 seconds"
-  );
-
-  if (!response.ok) {
-    const errorBody = await response.text();
-    console.error("GROQ SPEECH ERROR:", response.status, errorBody);
-    if (errorBody.includes("model_terms_required")) {
-      const err = new Error("Groq Speech requires 1-time terms acceptance: visit https://console.groq.com/playground?model=canopylabs%2Forpheus-v1-english and click 'Accept Terms'.");
-      err.code = "MODEL_TERMS_REQUIRED";
-      err.url = "https://console.groq.com/playground?model=canopylabs%2Forpheus-v1-english";
-      throw err;
-    }
-    throw new Error(`Groq speech generation failed (${response.status}): ${errorBody}`);
-  }
-
-  const arrayBuffer = await response.arrayBuffer();
-  return Buffer.from(arrayBuffer);
 }
 
 // ====================================================
@@ -472,7 +560,10 @@ app.get("/", (req, res) => {
     assistant: "JARVIS",
     college: COLLEGE_NAME,
     model: MODEL,
-    voice_support: !!GROQ_API_KEY
+    stt_model: GEMINI_STT_MODEL,
+    tts_model: GEMINI_TTS_MODEL,
+    voice_support: true,
+    speech_engine: "Google Gemini"
   });
 });
 
@@ -493,7 +584,8 @@ app.get("/health", async (req, res) => {
       college: COLLEGE_NAME,
       model: MODEL,
       firestore: "connected",
-      voice_support: !!GROQ_API_KEY,
+      voice_support: true,
+      speech_engine: "Google Gemini",
       data: dataCounts
     });
   } catch (error) {
@@ -621,30 +713,28 @@ app.post("/ask", async (req, res) => {
 
 // ====================================================
 // VOICE SUPPORT (POST /voice & POST /ask-voice)
-// Accepts audio -> Transcribes via Groq -> Answers via JARVIS -> Synthesizes via Groq
+// Pure Gemini Pipeline: Audio In -> Gemini STT -> JARVIS Q&A -> Gemini TTS -> 16kHz Stereo WAV
 // ====================================================
 async function handleVoiceRequest(req, res) {
+  const wantsRawAudio = req.query.format === "audio" || (req.headers.accept && req.headers.accept.includes("audio/wav"));
+
   try {
     let audioBuffer = null;
     let mimeType = "audio/wav";
-    let filename = "audio.wav";
 
     // 1. Multipart file upload
     if (req.file) {
       audioBuffer = req.file.buffer;
       mimeType = req.file.mimetype || "audio/wav";
-      filename = req.file.originalname || "audio.wav";
     } else if (req.files && req.files.length > 0) {
       audioBuffer = req.files[0].buffer;
       mimeType = req.files[0].mimetype || "audio/wav";
-      filename = req.files[0].originalname || "audio.wav";
     }
     // 2. JSON Base64 audio payload
     else if (req.body && req.body.audio) {
       const base64Data = req.body.audio.replace(/^data:audio\/\w+;base64,/, "");
       audioBuffer = Buffer.from(base64Data, "base64");
       mimeType = req.body.mime_type || "audio/wav";
-      filename = req.body.filename || "audio.wav";
     }
     // 3. Raw binary body
     else if (Buffer.isBuffer(req.body) && req.body.length > 0) {
@@ -658,52 +748,90 @@ async function handleVoiceRequest(req, res) {
       });
     }
 
-    console.log(`Received audio for voice query: ${audioBuffer.length} bytes, format: ${mimeType}`);
+    console.log(`Received audio for voice query: ${audioBuffer.length} bytes, MIME: ${mimeType}`);
 
-    // Step A: Transcribe audio with Groq Whisper
-    const recognizedQuestion = await transcribeAudioWithGroq(audioBuffer, mimeType, filename);
-    console.log("RECOGNIZED QUESTION:", recognizedQuestion);
+    // Step A: Transcribe audio with Gemini Multimodal STT
+    let recognizedQuestion = "";
+    try {
+      recognizedQuestion = await transcribeAudioWithGemini(audioBuffer, mimeType);
+    } catch (sttErr) {
+      console.error("GEMINI STT ERROR:", sttErr.message);
+      const sttMsg = (sttErr.message || "").toLowerCase();
+      const isQuota = sttMsg.includes("resource_exhausted") || sttMsg.includes("quota exceeded") || sttMsg.includes("429");
+      return res.status(isQuota ? 429 : 422).json({
+        error: isQuota
+          ? "Gemini Speech-to-Text quota exceeded. Please verify your Gemini API plan."
+          : "Failed to transcribe audio with Gemini: " + sttErr.message
+      });
+    }
+
+    console.log("RECOGNIZED QUESTION (Gemini):", recognizedQuestion);
 
     if (!recognizedQuestion || recognizedQuestion.trim() === "") {
       return res.status(422).json({
-        error: "Speech could not be recognized. Please record clearly and try again."
+        error: "Speech could not be recognized or audio is silent. Please record clearly and try again."
       });
     }
 
     // Step B: Answer question with JARVIS college logic
     const answer = await answerQuestion(recognizedQuestion);
-    console.log("JARVIS VOICE ANSWER:", answer);
+    console.log("JARVIS ANSWER:", answer);
 
-    // Step C: Generate speech audio with Groq
+    // Step C: Generate speech audio with Gemini TTS
+    let wavBuffer = null;
     let audioBase64 = null;
-    let audioNotice = null;
-    try {
-      const speechBuffer = await generateSpeechWithGroq(answer);
-      audioBase64 = speechBuffer.toString("base64");
+    let ttsNotice = null;
 
-      // Direct binary streaming if requested
-      if (req.query.format === "audio" || (req.headers.accept && req.headers.accept.includes("audio/wav"))) {
-        res.setHeader("Content-Type", "audio/wav");
-        res.setHeader("X-Jarvis-Question", encodeURIComponent(recognizedQuestion));
-        res.setHeader("X-Jarvis-Answer", encodeURIComponent(answer));
-        return res.send(speechBuffer);
-      }
-    } catch (ttsErr) {
-      console.warn("Groq speech generation notice:", ttsErr.message);
-      if (ttsErr.message.includes("model_terms_required")) {
-        audioNotice = "Please accept model terms for canopylabs/orpheus-v1-english at https://console.groq.com/playground?model=canopylabs%2Forpheus-v1-english";
-      } else {
-        audioNotice = ttsErr.message;
-      }
+    function checkQuotaExhaustion(err) {
+      if (!err) return false;
+      const msg = (err.message || "").toLowerCase();
+      return msg.includes("resource_exhausted") || msg.includes("quota exceeded") || msg.includes("429");
     }
 
-    // Return standard JSON with both text answer and generated audio
+    try {
+      wavBuffer = await generateSpeechWithGemini(answer, 16000, 2);
+      audioBase64 = wavBuffer.toString("base64");
+    } catch (ttsErr) {
+      console.error("GEMINI TTS ERROR:", ttsErr.message);
+      const isQuota = checkQuotaExhaustion(ttsErr);
+      
+      // If client specifically requested audio binary, fail with accurate error status (429 if quota, 502 if API failure)
+      if (wantsRawAudio) {
+        return res.status(isQuota ? 429 : 502).json({
+          error: isQuota 
+            ? "Gemini TTS quota exceeded. Please verify your Gemini API plan." 
+            : "Gemini speech generation failed: " + ttsErr.message,
+          question: recognizedQuestion,
+          answer: answer
+        });
+      }
+
+      ttsNotice = isQuota 
+        ? "Gemini TTS quota exceeded (RESOURCE_EXHAUSTED). Speech synthesis temporarily unavailable."
+        : "Gemini TTS unavailable: " + ttsErr.message;
+    }
+
+    // Direct binary streaming for Python Bridge & ESP32
+    if (wantsRawAudio) {
+      if (!wavBuffer) {
+        return res.status(502).json({ error: "Audio generation failed" });
+      }
+      res.setHeader("Content-Type", "audio/wav");
+      res.setHeader("X-Jarvis-Question", encodeURIComponent(recognizedQuestion));
+      res.setHeader("X-Jarvis-Answer", encodeURIComponent(answer));
+      return res.send(wavBuffer);
+    }
+
+    // Standard JSON response containing both text answer and generated audio
     res.json({
       question: recognizedQuestion,
       answer: answer,
       audio: audioBase64,
       audio_format: audioBase64 ? "audio/wav" : null,
-      audio_notice: audioNotice || undefined
+      audio_notice: ttsNotice || undefined,
+      sample_rate: 16000,
+      channels: 2,
+      speech_engine: "Google Gemini"
     });
 
   } catch (error) {
@@ -726,7 +854,7 @@ app.post("/ask-voice", upload.any(), handleVoiceRequest);
 
 // ====================================================
 // DIRECT TEXT-TO-SPEECH (POST /speech)
-// Synthesize arbitrary text using Groq
+// Synthesizes arbitrary text using Gemini TTS
 // ====================================================
 app.post("/speech", async (req, res) => {
   try {
@@ -736,28 +864,29 @@ app.post("/speech", async (req, res) => {
     }
 
     const cleanText = text.trim();
-    const speechBuffer = await generateSpeechWithGroq(cleanText);
+    const wavBuffer = await generateSpeechWithGemini(cleanText, 16000, 2);
 
     if (req.query.format === "audio" || (req.headers.accept && req.headers.accept.includes("audio/wav"))) {
       res.setHeader("Content-Type", "audio/wav");
-      return res.send(speechBuffer);
+      return res.send(wavBuffer);
     }
 
     res.json({
       text: cleanText,
-      audio: speechBuffer.toString("base64"),
-      audio_format: "audio/wav"
+      audio: wavBuffer.toString("base64"),
+      audio_format: "audio/wav",
+      sample_rate: 16000,
+      channels: 2,
+      speech_engine: "Google Gemini"
     });
   } catch (error) {
     console.error("SPEECH ENDPOINT ERROR:", error.message);
-    if (error.code === "MODEL_TERMS_REQUIRED") {
-      return res.status(403).json({
-        error: error.message,
-        terms_url: error.url
-      });
-    }
-    res.status(500).json({
-      error: error.message || "Failed to synthesize speech."
+    const msg = (error.message || "").toLowerCase();
+    const isQuota = msg.includes("resource_exhausted") || msg.includes("quota exceeded") || msg.includes("429");
+    res.status(isQuota ? 429 : 500).json({
+      error: isQuota 
+        ? "Gemini TTS quota exceeded. Please verify your Gemini API plan." 
+        : (error.message || "Failed to synthesize speech with Gemini.")
     });
   }
 });
@@ -799,13 +928,16 @@ if (require.main === module) {
   app.listen(PORT, () => {
     console.log("");
     console.log("=================================");
-    console.log("JARVIS VOICE-ENABLED SERVER READY");
+    console.log("JARVIS PURE GEMINI SERVER READY");
     console.log("=================================");
     console.log(`Server URL:    http://localhost:${PORT}`);
     console.log(`College:       ${COLLEGE_NAME}`);
-    console.log(`Model:         ${MODEL}`);
+    console.log(`Q&A Model:     ${MODEL}`);
+    console.log(`STT Model:     ${GEMINI_STT_MODEL}`);
+    console.log(`TTS Model:     ${GEMINI_TTS_MODEL}`);
+    console.log(`TTS Voice:     ${GEMINI_TTS_VOICE}`);
     console.log(`Rate Limit:    60 req/min per IP`);
-    console.log(`Voice Support: ${GROQ_API_KEY ? "Enabled (Groq STT & TTS)" : "Disabled (Missing GROQ_API_KEY)"}`);
+    console.log(`Speech Engine: Google Gemini (100% Native)`);
     console.log("=================================");
     console.log("");
   });
