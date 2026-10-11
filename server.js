@@ -8,15 +8,24 @@ const { initializeApp, cert } = require("firebase-admin/app");
 const { getFirestore } = require("firebase-admin/firestore");
 
 // ----------------------------------------------------
-// Firebase Initialization (Preserves existing credentials)
+// Firebase Initialization (Supports Local File, Secret File, or Env Var)
 // ----------------------------------------------------
-const serviceAccountPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH || "./serviceAccountKey.json";
 let serviceAccount;
-try {
-  serviceAccount = require(serviceAccountPath);
-} catch (err) {
-  console.error("FATAL: Could not load Firebase service account from:", serviceAccountPath);
-  process.exit(1);
+if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+  try {
+    serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+  } catch (err) {
+    console.error("FATAL: Invalid JSON in FIREBASE_SERVICE_ACCOUNT_JSON environment variable:", err.message);
+    process.exit(1);
+  }
+} else {
+  const serviceAccountPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH || "./serviceAccountKey.json";
+  try {
+    serviceAccount = require(serviceAccountPath);
+  } catch (err) {
+    console.error("FATAL: Could not load Firebase service account from:", serviceAccountPath);
+    process.exit(1);
+  }
 }
 
 initializeApp({
