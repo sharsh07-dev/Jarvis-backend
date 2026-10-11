@@ -68,6 +68,10 @@ const GEMINI_TTS_VOICE = process.env.GEMINI_TTS_VOICE || "Puck";
 const allowedOrigin = process.env.CORS_ORIGIN || "*";
 app.use(cors({ origin: allowedOrigin }));
 
+// Serve the monitoring dashboard from /public
+const path = require("path");
+app.use(express.static(path.join(__dirname, "public")));
+
 // Support raw binary audio bodies (for ESP32 and direct streams)
 app.use(express.raw({ type: ["audio/*", "application/octet-stream"], limit: "10mb" }));
 
@@ -78,6 +82,52 @@ app.use(express.json({ limit: "500kb" }));
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 } // 10MB
+});
+
+// ----------------------------------------------------
+// Server-Side Activity Logger (Circular Buffer for Live Monitoring)
+// ----------------------------------------------------
+const MAX_ACTIVITIES = 100;
+const activityLog = [];
+
+function recordActivity({ type, source, question, answer, latency, status = 200, error = null }) {
+  const item = {
+    id: Date.now() + "_" + Math.random().toString(36).substr(2, 6),
+    timestamp: new Date().toISOString(),
+    time: new Date().toLocaleTimeString("en-IN", { hour12: false }),
+    type: type || "ask",            // 'ask' | 'voice' | 'speech' | 'error'
+    source: source || "API",        // 'ESP32 / Bridge' | 'Dashboard / Web' | 'API'
+    question: question ? String(question) : null,
+    answer: answer ? String(answer) : null,
+    latency: latency != null ? Math.round(latency) : null,
+    status: status || 200,
+    error: error ? String(error) : null
+  };
+  activityLog.unshift(item);
+  if (activityLog.length > MAX_ACTIVITIES) {
+    activityLog.pop();
+  }
+  return item;
+}
+
+// Activity Monitoring Endpoints
+app.get("/activity", (req, res) => {
+  res.json({
+    total: activityLog.length,
+    activities: activityLog
+  });
+});
+
+app.get("/api/activity", (req, res) => {
+  res.json({
+    total: activityLog.length,
+    activities: activityLog
+  });
+});
+
+app.delete("/activity", (req, res) => {
+  activityLog.length = 0;
+  res.json({ success: true, message: "Activity log cleared" });
 });
 
 // ----------------------------------------------------
@@ -721,29 +771,38 @@ app.get("/placements", async (req, res) => {
 // ASK JARVIS (POST /ask - Text Input)
 // ====================================================
 app.post("/ask", async (req, res) => {
+  const t0 = Date.now();
+  const source = req.headers["x-client"] || 
+    (req.headers["user-agent"] && req.headers["user-agent"].includes("Mozilla") ? "Dashboard / Web" : "API Client");
+
   try {
     const { question } = req.body || {};
 
     if (typeof question !== "string" || question.trim() === "") {
-      return res.status(400).json({
-        error: "Please enter a valid question as a non-empty string."
-      });
+      const err = "Please enter a valid question as a non-empty string.";
+      recordActivity({ type: "error", source, question: "(empty)", latency: Date.now() - t0, status: 400, error: err });
+      return res.status(400).json({ error: err });
     }
 
     const cleanQuestion = question.trim();
 
     if (cleanQuestion.length > 300) {
-      return res.status(400).json({
-        error: "Question is too long (maximum 300 characters allowed)."
-      });
+      const err = "Question is too long (maximum 300 characters allowed).";
+      recordActivity({ type: "error", source, question: cleanQuestion, latency: Date.now() - t0, status: 400, error: err });
+      return res.status(400).json({ error: err });
     }
 
     const maxChars = parseInt(req.body?.max_chars || req.query?.max_chars || DEFAULT_MAX_ANSWER_CHARS, 10);
     const answer = await answerQuestion(cleanQuestion, maxChars);
+    const ms = Date.now() - t0;
+    recordActivity({ type: "ask", source, question: cleanQuestion, answer, latency: ms, status: 200 });
     res.json({ answer });
 
   } catch (error) {
+    const ms = Date.now() - t0;
     console.error("JARVIS ASK ERROR:", error.message);
+    const status = error.message && error.message.includes("timed out") ? 504 : 500;
+    recordActivity({ type: "error", source, question: req.body?.question || "(unknown)", latency: ms, status, error: error.message });
 
     if (error.message && error.message.includes("timed out")) {
       return res.status(504).json({
@@ -762,7 +821,11 @@ app.post("/ask", async (req, res) => {
 // Pure Gemini Pipeline: Audio In -> Gemini STT -> JARVIS Q&A -> Gemini TTS -> 16kHz Stereo WAV
 // ====================================================
 async function handleVoiceRequest(req, res) {
+  const t0 = Date.now();
   const wantsRawAudio = req.query.format === "audio" || (req.headers.accept && req.headers.accept.includes("audio/wav"));
+  const ua = req.headers["user-agent"] || "";
+  const isHardwareBridge = wantsRawAudio || ua.toLowerCase().includes("python") || ua.toLowerCase().includes("esp");
+  const source = isHardwareBridge ? "ESP32 / Bridge" : "Voice Client";
 
   try {
     let audioBuffer = null;
@@ -789,9 +852,9 @@ async function handleVoiceRequest(req, res) {
     }
 
     if (!audioBuffer || audioBuffer.length === 0) {
-      return res.status(400).json({
-        error: "No audio data received. Send audio via multipart file upload ('file' or 'audio'), JSON base64 { audio: '...' }, or raw binary audio body."
-      });
+      const err = "No audio data received. Send audio via multipart file upload ('file' or 'audio'), JSON base64 { audio: '...' }, or raw binary audio body.";
+      recordActivity({ type: "error", source, question: "(no audio data)", latency: Date.now() - t0, status: 400, error: err });
+      return res.status(400).json({ error: err });
     }
 
     console.log(`Received audio for voice query: ${audioBuffer.length} bytes, MIME: ${mimeType}`);
@@ -804,7 +867,9 @@ async function handleVoiceRequest(req, res) {
       console.error("GEMINI STT ERROR:", sttErr.message);
       const sttMsg = (sttErr.message || "").toLowerCase();
       const isQuota = sttMsg.includes("resource_exhausted") || sttMsg.includes("quota exceeded") || sttMsg.includes("429");
-      return res.status(isQuota ? 429 : 422).json({
+      const status = isQuota ? 429 : 422;
+      recordActivity({ type: "error", source, question: "(STT failed)", latency: Date.now() - t0, status, error: sttErr.message });
+      return res.status(status).json({
         error: isQuota
           ? "Gemini Speech-to-Text quota exceeded. Please verify your Gemini API plan."
           : "Failed to transcribe audio with Gemini: " + sttErr.message
@@ -814,9 +879,9 @@ async function handleVoiceRequest(req, res) {
     console.log("RECOGNIZED QUESTION (Gemini):", recognizedQuestion);
 
     if (!recognizedQuestion || recognizedQuestion.trim() === "") {
-      return res.status(422).json({
-        error: "Speech could not be recognized or audio is silent. Please record clearly and try again."
-      });
+      const err = "Speech could not be recognized or audio is silent. Please record clearly and try again.";
+      recordActivity({ type: "error", source, question: "(silence / unrecognized)", latency: Date.now() - t0, status: 422, error: err });
+      return res.status(422).json({ error: err });
     }
 
     // Step B: Answer question with JARVIS college logic
@@ -844,7 +909,9 @@ async function handleVoiceRequest(req, res) {
       
       // If client specifically requested audio binary, fail with accurate error status (429 if quota, 502 if API failure)
       if (wantsRawAudio) {
-        return res.status(isQuota ? 429 : 502).json({
+        const status = isQuota ? 429 : 502;
+        recordActivity({ type: "error", source, question: recognizedQuestion, answer, latency: Date.now() - t0, status, error: ttsErr.message });
+        return res.status(status).json({
           error: isQuota 
             ? "Gemini TTS quota exceeded. Please verify your Gemini API plan." 
             : "Gemini speech generation failed: " + ttsErr.message,
@@ -857,6 +924,16 @@ async function handleVoiceRequest(req, res) {
         ? "Gemini TTS quota exceeded (RESOURCE_EXHAUSTED). Speech synthesis temporarily unavailable."
         : "Gemini TTS unavailable: " + ttsErr.message;
     }
+
+    const ms = Date.now() - t0;
+    recordActivity({
+      type: "voice",
+      source,
+      question: recognizedQuestion,
+      answer,
+      latency: ms,
+      status: 200
+    });
 
     // Direct binary streaming for Python Bridge & ESP32
     if (wantsRawAudio) {
@@ -882,7 +959,10 @@ async function handleVoiceRequest(req, res) {
     });
 
   } catch (error) {
+    const ms = Date.now() - t0;
     console.error("VOICE PROCESS ERROR:", error.message);
+    const status = error.message && error.message.includes("timed out") ? 504 : 500;
+    recordActivity({ type: "error", source, question: "(voice failure)", latency: ms, status, error: error.message });
 
     if (error.message && error.message.includes("timed out")) {
       return res.status(504).json({
@@ -904,14 +984,22 @@ app.post("/ask-voice", upload.any(), handleVoiceRequest);
 // Synthesizes arbitrary text using Gemini TTS
 // ====================================================
 app.post("/speech", async (req, res) => {
+  const t0 = Date.now();
+  const ua = req.headers["user-agent"] || "";
+  const source = ua.toLowerCase().includes("python") || ua.toLowerCase().includes("esp") ? "ESP32 / Bridge" : "API";
+
   try {
     const text = req.body?.text || req.body?.input;
     if (!text || typeof text !== "string" || text.trim() === "") {
-      return res.status(400).json({ error: "Please provide 'text' to synthesize as speech." });
+      const err = "Please provide 'text' to synthesize as speech.";
+      recordActivity({ type: "error", source, question: "(empty text)", latency: Date.now() - t0, status: 400, error: err });
+      return res.status(400).json({ error: err });
     }
 
     const cleanText = text.trim();
     const wavBuffer = await generateSpeechWithGemini(cleanText, 16000, 2);
+    const ms = Date.now() - t0;
+    recordActivity({ type: "speech", source, question: cleanText.slice(0, 60), answer: "Audio generated (" + wavBuffer.length + " bytes)", latency: ms, status: 200 });
 
     if (req.query.format === "audio" || (req.headers.accept && req.headers.accept.includes("audio/wav"))) {
       res.setHeader("Content-Type", "audio/wav");
@@ -927,10 +1015,13 @@ app.post("/speech", async (req, res) => {
       speech_engine: "Google Gemini"
     });
   } catch (error) {
+    const ms = Date.now() - t0;
     console.error("SPEECH ENDPOINT ERROR:", error.message);
     const msg = (error.message || "").toLowerCase();
     const isQuota = msg.includes("resource_exhausted") || msg.includes("quota exceeded") || msg.includes("429");
-    res.status(isQuota ? 429 : 500).json({
+    const status = isQuota ? 429 : 500;
+    recordActivity({ type: "error", source, question: "(speech failed)", latency: ms, status, error: error.message });
+    res.status(status).json({
       error: isQuota 
         ? "Gemini TTS quota exceeded. Please verify your Gemini API plan." 
         : (error.message || "Failed to synthesize speech with Gemini.")

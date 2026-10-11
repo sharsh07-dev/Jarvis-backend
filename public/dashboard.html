@@ -1,0 +1,636 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>JARVIS — Backend Control Panel</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    :root{--bg:#090d14;--surface:#0e1521;--card:#121a28;--border:#1e2d45;--accent:#3b82f6;--accent2:#6366f1;--green:#10b981;--amber:#f59e0b;--red:#ef4444;--cyan:#06b6d4;--purple:#a855f7;--text:#e2e8f0;--muted:#64748b;--subtle:#1e2d45;}
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+    html{height:100%;}
+    body{background:var(--bg);color:var(--text);font-family:'Inter',system-ui,sans-serif;font-size:14px;min-height:100%;display:flex;flex-direction:column;}
+    ::-webkit-scrollbar{width:5px;height:5px;}
+    ::-webkit-scrollbar-track{background:var(--bg);}
+    ::-webkit-scrollbar-thumb{background:var(--border);border-radius:99px;}
+    .topbar{display:flex;align-items:center;justify-content:space-between;padding:0 24px;height:60px;background:var(--surface);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:100;}
+    .logo{display:flex;align-items:center;gap:10px;font-weight:800;font-size:18px;letter-spacing:-0.5px;}
+    .logo-icon{width:34px;height:34px;background:linear-gradient(135deg,var(--accent),var(--purple));border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:16px;}
+    .logo span{color:var(--accent);}
+    .topbar-right{display:flex;align-items:center;gap:16px;}
+    .status-badge{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:5px 12px;border-radius:99px;background:rgba(16,185,129,0.12);color:var(--green);border:1px solid rgba(16,185,129,0.25);transition:all 0.3s;}
+    .status-badge.error{background:rgba(239,68,68,0.12);color:var(--red);border-color:rgba(239,68,68,0.25);}
+    .status-badge.loading{background:rgba(245,158,11,0.12);color:var(--amber);border-color:rgba(245,158,11,0.25);}
+    .dot{width:7px;height:7px;border-radius:50%;background:currentColor;animation:pulse 2s infinite;}
+    @keyframes pulse{0%,100%{opacity:1;}50%{opacity:0.4;}}
+    .backend-url{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted);background:var(--card);padding:4px 10px;border-radius:6px;border:1px solid var(--border);}
+    .refresh-btn{background:var(--accent);color:white;border:none;border-radius:8px;padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:6px;transition:opacity 0.2s;}
+    .refresh-btn:hover{opacity:0.85;}
+    .refresh-btn:disabled{opacity:0.5;cursor:wait;}
+    .main{flex:1;padding:24px;display:flex;flex-direction:column;gap:20px;max-width:1600px;margin:0 auto;width:100%;}
+    .stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;}
+    .stat-card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:18px;display:flex;flex-direction:column;gap:8px;transition:border-color 0.2s,transform 0.2s;position:relative;overflow:hidden;}
+    .stat-card::before{content:'';position:absolute;inset:0;background:linear-gradient(135deg,var(--glow-color,transparent) 0%,transparent 60%);opacity:0.07;pointer-events:none;}
+    .stat-card:hover{border-color:var(--accent);transform:translateY(-2px);}
+    .stat-icon{font-size:20px;}
+    .stat-value{font-size:28px;font-weight:800;letter-spacing:-1px;color:var(--text);}
+    .stat-label{font-size:11px;font-weight:500;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;}
+    .two-col{display:grid;grid-template-columns:1fr 1fr;gap:20px;}
+    .three-col{display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px;}
+    @media(max-width:1100px){.two-col,.three-col{grid-template-columns:1fr;}}
+    .panel{background:var(--card);border:1px solid var(--border);border-radius:16px;display:flex;flex-direction:column;overflow:hidden;}
+    .panel-header{padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:12px;}
+    .panel-title{font-weight:700;font-size:13px;display:flex;align-items:center;gap:8px;color:var(--text);}
+    .panel-body{padding:20px;flex:1;overflow:auto;}
+    .query-form{display:flex;gap:10px;}
+    .query-input{flex:1;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 14px;color:var(--text);font-family:'Inter',sans-serif;font-size:13px;outline:none;transition:border-color 0.2s;}
+    .query-input:focus{border-color:var(--accent);}
+    .query-input::placeholder{color:var(--muted);}
+    .query-btn{background:linear-gradient(135deg,var(--accent),var(--accent2));color:white;border:none;border-radius:10px;padding:10px 18px;font-weight:700;font-size:13px;cursor:pointer;transition:opacity 0.2s,transform 0.1s;white-space:nowrap;}
+    .query-btn:hover{opacity:0.9;transform:scale(1.02);}
+    .query-btn:disabled{opacity:0.5;cursor:wait;}
+    .query-result{margin-top:16px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px;font-size:13px;line-height:1.6;min-height:60px;display:flex;align-items:flex-start;gap:10px;}
+    .query-result .q-icon{font-size:18px;flex-shrink:0;margin-top:1px;}
+    .query-result .q-text{flex:1;color:var(--text);}
+    .query-result.empty .q-text{color:var(--muted);font-style:italic;}
+    @keyframes spin{to{transform:rotate(360deg);}}
+    .char-count{font-size:10px;font-family:'JetBrains Mono',monospace;color:var(--muted);background:var(--card);border:1px solid var(--border);border-radius:4px;padding:2px 6px;}
+    .quick-questions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;}
+    .quick-btn{background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:5px 12px;font-size:11px;font-weight:500;color:var(--muted);cursor:pointer;transition:all 0.2s;}
+    .quick-btn:hover{border-color:var(--accent);color:var(--accent);}
+    .activity-feed{display:flex;flex-direction:column;gap:8px;max-height:320px;overflow-y:auto;}
+    .activity-item{display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border-radius:10px;background:var(--surface);border:1px solid var(--border);animation:slideIn 0.3s ease;}
+    @keyframes slideIn{from{opacity:0;transform:translateX(-10px);}to{opacity:1;transform:translateX(0);}}
+    .ai-time{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--muted);white-space:nowrap;flex-shrink:0;margin-top:2px;}
+    .ai-badge{font-size:10px;font-weight:700;padding:2px 8px;border-radius:99px;flex-shrink:0;letter-spacing:0.3px;}
+    .ai-badge.ask{background:rgba(59,130,246,0.15);color:#60a5fa;}
+    .ai-badge.voice{background:rgba(16,185,129,0.18);color:#34d399;border:1px solid rgba(16,185,129,0.3);}
+    .ai-badge.speech{background:rgba(168,85,247,0.18);color:#c084fc;border:1px solid rgba(168,85,247,0.3);}
+    .ai-badge.error{background:rgba(239,68,68,0.18);color:#f87171;border:1px solid rgba(239,68,68,0.3);}
+    .ai-source{font-size:10px;font-weight:700;padding:2px 7px;border-radius:6px;font-family:'JetBrains Mono',monospace;white-space:nowrap;}
+    .ai-source.esp32{background:rgba(6,182,212,0.15);color:#22d3ee;border:1px solid rgba(6,182,212,0.35);}
+    .ai-source.web{background:rgba(139,92,246,0.15);color:#a78bfa;border:1px solid rgba(139,92,246,0.3);}
+    .ai-source.api{background:rgba(100,116,139,0.2);color:#94a3b8;border:1px solid rgba(100,116,139,0.3);}
+    .target-select{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:6px 10px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:11px;outline:none;cursor:pointer;}
+    .target-select:focus{border-color:var(--accent);}
+    .ai-text{font-size:12px;color:var(--text);flex:1;line-height:1.4;}
+    .ai-text .q{font-weight:600;}
+    .ai-text .a{color:var(--muted);}
+    .data-tabs{display:flex;gap:4px;padding:12px 20px;border-bottom:1px solid var(--border);}
+    .data-tab{background:none;border:1px solid transparent;border-radius:8px;padding:5px 12px;font-size:12px;font-weight:600;color:var(--muted);cursor:pointer;transition:all 0.2s;}
+    .data-tab.active{background:var(--subtle);border-color:var(--border);color:var(--text);}
+    .data-tab:hover:not(.active){color:var(--text);}
+    .data-table-wrap{overflow:auto;}
+    table{width:100%;border-collapse:collapse;font-size:12px;}
+    th{text-align:left;padding:8px 12px;color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;border-bottom:1px solid var(--border);}
+    td{padding:9px 12px;border-bottom:1px solid rgba(30,45,69,0.5);vertical-align:top;}
+    tr:last-child td{border-bottom:none;}
+    tr:hover td{background:rgba(59,130,246,0.04);}
+    td.mono{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted);}
+    td .tag{display:inline-block;background:rgba(59,130,246,0.1);color:#93c5fd;border-radius:4px;padding:1px 6px;font-size:11px;font-weight:500;}
+    .loading-placeholder{padding:40px;text-align:center;color:var(--muted);font-size:12px;display:flex;flex-direction:column;align-items:center;gap:10px;}
+    .spinner{width:28px;height:28px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 0.9s linear infinite;}
+    .model-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+    .model-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:6px;transition:border-color 0.2s;}
+    .model-card:hover{border-color:var(--accent);}
+    .mc-role{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;color:var(--muted);}
+    .mc-name{font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--accent);font-weight:600;}
+    .mc-badge{font-size:10px;color:var(--green);background:rgba(16,185,129,0.1);border:1px solid rgba(16,185,129,0.2);border-radius:99px;padding:2px 8px;width:fit-content;}
+    .endpoint-list{display:flex;flex-direction:column;gap:8px;}
+    .endpoint-row{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:10px;background:var(--surface);border:1px solid var(--border);cursor:pointer;transition:border-color 0.2s;}
+    .endpoint-row:hover{border-color:var(--accent);}
+    .method-badge{font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;padding:2px 8px;border-radius:6px;flex-shrink:0;min-width:44px;text-align:center;}
+    .method-badge.GET{background:rgba(16,185,129,0.1);color:#34d399;}
+    .method-badge.POST{background:rgba(99,102,241,0.1);color:#a5b4fc;}
+    .endpoint-path{font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text);}
+    .endpoint-desc{font-size:11px;color:var(--muted);flex:1;text-align:right;}
+    .endpoint-ping{font-size:10px;font-family:'JetBrains Mono',monospace;}
+    .endpoint-ping.ok{color:var(--green);}
+    .endpoint-ping.fail{color:var(--red);}
+    .endpoint-ping.pending{color:var(--amber);}
+    .sparkbar-row{display:flex;align-items:center;gap:10px;margin-bottom:10px;}
+    .sparkbar-label{font-size:12px;color:var(--muted);min-width:90px;}
+    .sparkbar-track{flex:1;background:var(--surface);border-radius:99px;height:8px;overflow:hidden;}
+    .sparkbar-fill{height:100%;border-radius:99px;transition:width 1s ease;}
+    .sparkbar-val{font-size:12px;font-weight:700;font-family:'JetBrains Mono',monospace;min-width:28px;text-align:right;}
+    #toast{position:fixed;bottom:24px;right:24px;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:12px 18px;font-size:13px;display:flex;align-items:center;gap:10px;box-shadow:0 10px 40px rgba(0,0,0,0.5);opacity:0;transform:translateY(10px);transition:all 0.3s;z-index:999;max-width:380px;}
+    #toast.show{opacity:1;transform:translateY(0);}
+    .chart-bars{display:flex;align-items:flex-end;gap:4px;height:80px;margin-top:12px;}
+    .chart-bar{flex:1;background:linear-gradient(to top,var(--accent),var(--accent2));border-radius:4px 4px 0 0;min-height:4px;transition:height 0.8s ease;position:relative;}
+    .chart-labels{display:flex;justify-content:space-between;margin-top:6px;}
+    .chart-label{font-size:9px;color:var(--muted);font-family:'JetBrains Mono',monospace;}
+    .ping-ring{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:rgba(16,185,129,0.15);color:var(--green);font-size:10px;position:relative;}
+    .ping-ring::after{content:'';position:absolute;inset:-3px;border:2px solid var(--green);border-radius:50%;opacity:0.5;animation:ripple 2s infinite;}
+    @keyframes ripple{from{transform:scale(0.8);opacity:0.5;}to{transform:scale(1.4);opacity:0;}}
+    .settings-row{display:flex;gap:12px;align-items:center;}
+    .settings-label{font-size:12px;color:var(--muted);}
+    .settings-input{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:6px 10px;color:var(--text);font-size:12px;outline:none;width:80px;}
+    .settings-input:focus{border-color:var(--accent);}
+  </style>
+</head>
+<body>
+<header class="topbar">
+  <div class="logo">
+    <div class="logo-icon">🤖</div>
+    JARVIS <span>&nbsp;Dashboard</span>
+  </div>
+  <div class="topbar-right">
+    <select class="target-select" id="backend-target-select" onchange="changeBackendTarget(this.value)">
+      <option value="http://localhost:3000">🖥️ Localhost (3000)</option>
+      <option value="https://jarvis-backend-j9ro.onrender.com">☁️ Render (Production)</option>
+      <option value="custom">✏️ Custom URL…</option>
+    </select>
+    <span class="backend-url" id="backend-url-display">localhost:3000</span>
+    <span class="status-badge loading" id="global-status">
+      <span class="dot"></span>
+      <span id="status-text">Connecting…</span>
+    </span>
+    <button class="refresh-btn" id="refresh-all-btn" onclick="refreshAll()">↺ Refresh</button>
+  </div>
+</header>
+
+<main class="main">
+  <!-- Stats -->
+  <div class="stats-grid">
+    <div class="stat-card" style="--glow-color:#3b82f6"><div class="stat-icon">📊</div><div class="stat-value" id="stat-faculty">—</div><div class="stat-label">Faculty Members</div></div>
+    <div class="stat-card" style="--glow-color:#6366f1"><div class="stat-icon">🏛️</div><div class="stat-value" id="stat-departments">—</div><div class="stat-label">Departments</div></div>
+    <div class="stat-card" style="--glow-color:#10b981"><div class="stat-icon">📚</div><div class="stat-value" id="stat-courses">—</div><div class="stat-label">Courses</div></div>
+    <div class="stat-card" style="--glow-color:#f59e0b"><div class="stat-icon">📍</div><div class="stat-value" id="stat-locations">—</div><div class="stat-label">Locations</div></div>
+    <div class="stat-card" style="--glow-color:#ef4444"><div class="stat-icon">🎓</div><div class="stat-value" id="stat-admissions">—</div><div class="stat-label">Admission Docs</div></div>
+    <div class="stat-card" style="--glow-color:#06b6d4"><div class="stat-icon">💼</div><div class="stat-value" id="stat-placements">—</div><div class="stat-label">Placement Records</div></div>
+    <div class="stat-card" style="--glow-color:#a855f7"><div class="stat-icon">⚡</div><div class="stat-value" id="stat-requests">0</div><div class="stat-label">Total Requests</div></div>
+    <div class="stat-card" style="--glow-color:#10b981"><div class="stat-icon">⏱️</div><div class="stat-value" id="stat-uptime">—</div><div class="stat-label">Last Response ms</div></div>
+  </div>
+
+  <!-- Query + Feed -->
+  <div class="two-col">
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">💬 Query Console</div>
+        <div class="settings-row">
+          <span class="settings-label">max_chars:</span>
+          <input class="settings-input" type="number" id="max-chars-input" value="120" min="30" max="500" />
+        </div>
+      </div>
+      <div class="panel-body">
+        <div class="query-form">
+          <input class="query-input" id="query-input" placeholder="Ask JARVIS anything about the college…" autocomplete="off" />
+          <button class="query-btn" id="ask-btn" onclick="askJarvis()">Ask →</button>
+        </div>
+        <div class="query-result empty" id="query-result">
+          <span class="q-icon">💡</span>
+          <span class="q-text">Enter a question above to query the backend directly.</span>
+        </div>
+        <div class="quick-questions">
+          <button class="quick-btn" onclick="fillAndAsk('Where is classroom 213?')">📍 Room 213</button>
+          <button class="quick-btn" onclick="fillAndAsk('Who teaches Computer Networks?')">👩‍🏫 Faculty</button>
+          <button class="quick-btn" onclick="fillAndAsk('What is the highest placement package?')">💰 Placements</button>
+          <button class="quick-btn" onclick="fillAndAsk('What documents are required for admission?')">📄 Admissions</button>
+          <button class="quick-btn" onclick="fillAndAsk('What engineering departments are offered?')">🏛️ Departments</button>
+          <button class="quick-btn" onclick="fillAndAsk('What are the college office timings?')">🕐 Timings</button>
+          <button class="quick-btn" onclick="fillAndAsk('Hello JARVIS')">👋 Greet</button>
+          <button class="quick-btn" onclick="fillAndAsk('What are the courses offered?')">📚 Courses</button>
+        </div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">📡 Live Activity Feed <span style="font-size:11px;font-weight:500;color:var(--green);margin-left:6px;">● Live Polling</span></div>
+        <button class="data-tab" onclick="clearFeed()" style="margin-left:auto;">Clear</button>
+      </div>
+      <div class="panel-body">
+        <div class="activity-feed" id="activity-feed">
+          <div style="padding:24px;text-align:center;color:var(--muted);font-size:12px;">Waiting for requests from ESP32, Python bridge, or console… 📡</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Models + Endpoints + Chart -->
+  <div class="three-col">
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">🧠 AI Models</div>
+        <div class="ping-ring">✓</div>
+      </div>
+      <div class="panel-body">
+        <div class="model-grid">
+          <div class="model-card"><div class="mc-role">Q&amp;A Engine</div><div class="mc-name" id="m-qa">—</div><div class="mc-badge">Active</div></div>
+          <div class="model-card"><div class="mc-role">Speech-to-Text</div><div class="mc-name" id="m-stt">—</div><div class="mc-badge">Active</div></div>
+          <div class="model-card"><div class="mc-role">Text-to-Speech</div><div class="mc-name" id="m-tts">—</div><div class="mc-badge">Active</div></div>
+          <div class="model-card"><div class="mc-role">TTS Voice</div><div class="mc-name" id="m-voice">—</div><div class="mc-badge">Gemini Native</div></div>
+        </div>
+        <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border);">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">DB Collections</div>
+          <div id="db-bars"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">🔌 API Endpoints</div>
+        <button class="refresh-btn" onclick="pingEndpoints()" id="ping-btn">Ping All</button>
+      </div>
+      <div class="panel-body" style="padding:12px;">
+        <div class="endpoint-list" id="endpoint-list"></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">📈 Session Requests</div>
+        <span id="chart-total" style="font-size:11px;color:var(--muted);">0 total</span>
+      </div>
+      <div class="panel-body">
+        <div class="chart-bars" id="chart-bars"></div>
+        <div class="chart-labels" id="chart-labels"></div>
+        <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border);">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Response Time Trend</div>
+          <div id="rt-bars"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Data Explorer -->
+  <div class="panel">
+    <div class="panel-header">
+      <div class="panel-title">🗃️ Firestore Data Explorer</div>
+      <span style="font-size:11px;color:var(--muted);">Live read from backend API</span>
+    </div>
+    <div class="data-tabs">
+      <button class="data-tab active" onclick="loadTable('departments')">Departments</button>
+      <button class="data-tab" onclick="loadTable('faculty')">Faculty</button>
+      <button class="data-tab" onclick="loadTable('courses')">Courses</button>
+      <button class="data-tab" onclick="loadTable('locations')">Locations</button>
+      <button class="data-tab" onclick="loadTable('placements')">Placements</button>
+    </div>
+    <div class="panel-body data-table-wrap" id="data-table-body">
+      <div class="loading-placeholder"><div class="spinner"></div>Loading data…</div>
+    </div>
+  </div>
+</main>
+
+<div id="toast"><span id="toast-icon">✅</span><span id="toast-msg">Success</span></div>
+
+<script>
+let BASE = (function(){
+  var saved = localStorage.getItem('jarvis_target_base');
+  if (saved) return saved;
+  var u = window.location;
+  if (u.protocol === 'file:') return 'http://localhost:3000';
+  if (u.port === '3000') return u.protocol + '//' + u.hostname + ':3000';
+  return u.protocol + '//' + u.hostname + (u.port ? ':' + u.port : '');
+})();
+
+function updateTargetDisplay() {
+  var sel = document.getElementById('backend-target-select');
+  if (BASE.includes('localhost:3000')) {
+    sel.value = 'http://localhost:3000';
+  } else if (BASE.includes('jarvis-backend-j9ro.onrender.com')) {
+    sel.value = 'https://jarvis-backend-j9ro.onrender.com';
+  } else {
+    sel.value = 'custom';
+  }
+  document.getElementById('backend-url-display').textContent = BASE.replace('http://','').replace('https://','');
+}
+updateTargetDisplay();
+
+async function changeBackendTarget(target) {
+  if (target === 'custom') {
+    var customUrl = prompt('Enter JARVIS backend URL (e.g. http://192.168.1.100:3000):', BASE);
+    if (!customUrl) {
+      updateTargetDisplay();
+      return;
+    }
+    BASE = customUrl.replace(/\/+$/, '');
+  } else {
+    BASE = target;
+  }
+  localStorage.setItem('jarvis_target_base', BASE);
+  updateTargetDisplay();
+  toast('🔄', 'Target switched to ' + BASE);
+  await refreshAll();
+  await pollServerActivity();
+}
+
+var ENDPOINTS = [
+  {method:'GET', path:'/', desc:'Server Status'},
+  {method:'GET', path:'/health', desc:'Health + Firestore'},
+  {method:'GET', path:'/activity', desc:'Live Activity Feed'},
+  {method:'GET', path:'/college', desc:'College Info'},
+  {method:'GET', path:'/departments', desc:'Departments'},
+  {method:'GET', path:'/courses', desc:'Courses'},
+  {method:'GET', path:'/locations', desc:'Locations'},
+  {method:'GET', path:'/faculty', desc:'Faculty'},
+  {method:'GET', path:'/admissions', desc:'Admissions'},
+  {method:'GET', path:'/placements', desc:'Placements'},
+  {method:'POST', path:'/ask', desc:'AI Q&A'},
+  {method:'POST', path:'/voice', desc:'Voice Pipeline'},
+  {method:'POST', path:'/speech', desc:'TTS Synthesis'},
+];
+
+var sessionRequests = 0;
+var responseTimes = [];
+var requestCounts = Array(10).fill(0);
+var currentMinute = new Date().getMinutes();
+var activityLog = [];
+var knownActivityIds = new Set();
+var currentTable = 'departments';
+
+async function apiFetch(path, opts) {
+  var res = await fetch(BASE + path, opts || {});
+  var ct = res.headers.get('content-type') || '';
+  var data = ct.includes('json') ? await res.json() : await res.text();
+  return {ok: res.ok, status: res.status, data: data};
+}
+
+function toast(icon, msg, ms) {
+  var t = document.getElementById('toast');
+  document.getElementById('toast-icon').textContent = icon;
+  document.getElementById('toast-msg').textContent = msg;
+  t.classList.add('show');
+  setTimeout(function(){ t.classList.remove('show'); }, ms || 2800);
+}
+
+function setStatus(state, text) {
+  var el = document.getElementById('global-status');
+  el.className = 'status-badge ' + state;
+  document.getElementById('status-text').textContent = text;
+}
+
+async function loadHealth() {
+  setStatus('loading', 'Checking…');
+  try {
+    var t0 = Date.now();
+    var r = await apiFetch('/health');
+    var ms = Date.now() - t0;
+    if (!r.ok) throw new Error('Health check returned status ' + r.status);
+    setStatus('ok', 'Online · ' + ms + 'ms');
+    var d = r.data.data || {};
+    document.getElementById('stat-faculty').textContent     = d.faculty     !== undefined ? d.faculty     : '—';
+    document.getElementById('stat-departments').textContent = d.departments !== undefined ? d.departments : '—';
+    document.getElementById('stat-courses').textContent     = d.courses     !== undefined ? d.courses     : '—';
+    document.getElementById('stat-locations').textContent   = d.locations   !== undefined ? d.locations   : '—';
+    document.getElementById('stat-admissions').textContent  = d.admissions  !== undefined ? d.admissions  : '—';
+    document.getElementById('stat-placements').textContent  = d.placements  !== undefined ? d.placements  : '—';
+    document.getElementById('stat-uptime').textContent      = ms;
+    var keys = Object.keys(d);
+    var vals = keys.map(function(k){ return d[k]; });
+    var maxVal = Math.max.apply(null, vals.concat([1]));
+    var colors = ['#3b82f6','#6366f1','#10b981','#f59e0b','#ef4444','#06b6d4','#a855f7'];
+    document.getElementById('db-bars').innerHTML = keys.map(function(k, i){
+      return '<div class="sparkbar-row"><div class="sparkbar-label">' + k + '</div><div class="sparkbar-track"><div class="sparkbar-fill" style="width:' + Math.round(d[k]/maxVal*100) + '%;background:' + colors[i%colors.length] + ';"></div></div><div class="sparkbar-val" style="color:' + colors[i%colors.length] + '">' + d[k] + '</div></div>';
+    }).join('');
+  } catch(e) {
+    setStatus('error', 'Offline');
+    toast('❌', 'Backend unreachable (' + BASE + '): ' + e.message);
+  }
+}
+
+async function loadModels() {
+  try {
+    var r = await apiFetch('/');
+    document.getElementById('m-qa').textContent  = r.data.model     || '—';
+    document.getElementById('m-stt').textContent = r.data.stt_model || '—';
+    document.getElementById('m-tts').textContent = r.data.tts_model || '—';
+    document.getElementById('m-voice').textContent = 'Puck (Gemini)';
+  } catch(e) {}
+}
+
+function renderEndpointList() {
+  document.getElementById('endpoint-list').innerHTML = ENDPOINTS.map(function(ep, i){
+    return '<div class="endpoint-row" onclick="openEndpoint(' + i + ')">' +
+      '<span class="method-badge ' + ep.method + '">' + ep.method + '</span>' +
+      '<span class="endpoint-path">' + ep.path + '</span>' +
+      '<span class="endpoint-desc">' + ep.desc + '</span>' +
+      '<span class="endpoint-ping pending" id="ep-ping-' + i + '">···</span>' +
+      '</div>';
+  }).join('');
+}
+
+function openEndpoint(i) {
+  if (ENDPOINTS[i].method === 'GET') window.open(BASE + ENDPOINTS[i].path, '_blank');
+}
+
+async function pingEndpoints() {
+  var btn = document.getElementById('ping-btn');
+  btn.disabled = true; btn.textContent = '…';
+  for (var i = 0; i < ENDPOINTS.length; i++) {
+    var ep = ENDPOINTS[i];
+    var el = document.getElementById('ep-ping-' + i);
+    var t0 = Date.now();
+    try {
+      var opts = ep.method === 'POST'
+        ? {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({question:'ping'}), signal: AbortSignal.timeout(5000)}
+        : {signal: AbortSignal.timeout(5000)};
+      await fetch(BASE + ep.path, opts);
+      var ms = Date.now() - t0;
+      el.textContent = ms + 'ms'; el.className = 'endpoint-ping ok';
+    } catch(e) {
+      el.textContent = 'fail'; el.className = 'endpoint-ping fail';
+    }
+  }
+  btn.disabled = false; btn.textContent = 'Ping All';
+  toast('✅', 'All endpoints pinged');
+}
+
+function escHtml(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+async function askJarvis() {
+  var input = document.getElementById('query-input');
+  var btn = document.getElementById('ask-btn');
+  var result = document.getElementById('query-result');
+  var maxChars = parseInt(document.getElementById('max-chars-input').value) || 120;
+  var question = input.value.trim();
+  if (!question) return;
+  btn.disabled = true;
+  result.className = 'query-result';
+  result.innerHTML = '<span class="q-icon">🤔</span><span class="q-text">JARVIS is thinking…</span>';
+  var t0 = Date.now();
+  try {
+    var r = await apiFetch('/ask', {
+      method:'POST',
+      headers:{'Content-Type':'application/json', 'x-client': 'Dashboard / Web'},
+      body: JSON.stringify({question: question, max_chars: maxChars})
+    });
+    var ms = Date.now() - t0;
+    sessionRequests++;
+    document.getElementById('stat-requests').textContent = sessionRequests;
+    updateChart(ms);
+    if (!r.ok) throw new Error(r.data.error || 'Unknown error');
+    var ans = r.data.answer || '(no answer)';
+    result.className = 'query-result';
+    result.innerHTML = '<span class="q-icon">🤖</span><span class="q-text">' + escHtml(ans) + '</span><span class="char-count">' + ans.length + 'c · ' + ms + 'ms</span>';
+    // Poll immediately to grab the server activity
+    setTimeout(pollServerActivity, 400);
+  } catch(e) {
+    var ms2 = Date.now() - t0;
+    result.className = 'query-result';
+    result.innerHTML = '<span class="q-icon">⚠️</span><span class="q-text" style="color:var(--red)">' + escHtml(e.message) + '</span>';
+    setTimeout(pollServerActivity, 400);
+  }
+  btn.disabled = false;
+}
+
+function fillAndAsk(q) {
+  document.getElementById('query-input').value = q;
+  askJarvis();
+}
+
+document.getElementById('query-input').addEventListener('keydown', function(e){ if (e.key==='Enter') askJarvis(); });
+
+function renderActivityItem(item) {
+  var type = (item.type || 'ask').toLowerCase();
+  var src = item.source || 'API';
+  var srcClass = src.toLowerCase().includes('esp') || src.toLowerCase().includes('bridge') ? 'esp32' : (src.toLowerCase().includes('dash') ? 'web' : 'api');
+  var srcLabel = srcClass === 'esp32' ? '⚡ ' + src : (srcClass === 'web' ? '💬 Web' : '🤖 ' + src);
+  var latencyStr = item.latency != null ? item.latency + 'ms' : '';
+  var statusBadge = item.status && item.status !== 200 ? ' · ' + item.status : '';
+
+  var qText = item.question || item.error || '(no question text)';
+  var aText = item.answer || (item.error ? '⚠️ ' + item.error : null);
+
+  return '<div class="activity-item">' +
+    '<span class="ai-time">' + escHtml(item.time || item.timestamp?.slice(11,19) || '') + '</span>' +
+    '<span class="ai-source ' + srcClass + '">' + escHtml(srcLabel) + '</span>' +
+    '<span class="ai-badge ' + escHtml(type) + '">' + escHtml(type.toUpperCase()) + '</span>' +
+    '<span class="ai-text">' +
+      '<span class="q">' + escHtml(qText.length > 70 ? qText.slice(0, 70) + '…' : qText) + '</span>' +
+      (aText ? '<br><span class="a">' + escHtml(aText.length > 95 ? aText.slice(0, 95) + '…' : aText) + '</span>' : '') +
+    '</span>' +
+    (latencyStr ? '<span class="char-count">' + latencyStr + statusBadge + '</span>' : '') +
+  '</div>';
+}
+
+async function pollServerActivity() {
+  try {
+    var res = await fetch(BASE + '/activity', { signal: AbortSignal.timeout(4000) });
+    if (!res.ok) return;
+    var data = await res.json();
+    var list = data.activities || [];
+    
+    if (list.length === 0) {
+      if (activityLog.length === 0) {
+        document.getElementById('activity-feed').innerHTML = 
+          '<div style="padding:24px;text-align:center;color:var(--muted);font-size:12px;">Waiting for requests from ESP32, Python bridge, or console… 📡</div>';
+      }
+      return;
+    }
+
+    // Check if new items arrived
+    var hasNew = false;
+    list.forEach(function(item){
+      if (item.id && !knownActivityIds.has(item.id)) {
+        knownActivityIds.add(item.id);
+        hasNew = true;
+        if (item.latency) updateChart(item.latency);
+      }
+    });
+
+    activityLog = list;
+    var totalProcessed = Math.max(sessionRequests, data.total || list.length);
+    sessionRequests = totalProcessed;
+    document.getElementById('stat-requests').textContent = totalProcessed;
+
+    var feed = document.getElementById('activity-feed');
+    feed.innerHTML = list.slice(0, 40).map(renderActivityItem).join('');
+
+  } catch(e) {
+    // Silent fail on polling errors
+  }
+}
+
+async function clearFeed() {
+  activityLog = [];
+  knownActivityIds.clear();
+  document.getElementById('activity-feed').innerHTML = '<div style="padding:20px;text-align:center;color:var(--muted);font-size:12px;">Feed cleared.</div>';
+  try {
+    await fetch(BASE + '/activity', { method: 'DELETE' });
+    toast('🗑️', 'Server activity log cleared');
+  } catch(e) {}
+}
+
+function updateChart(ms) {
+  responseTimes.push(ms);
+  if (responseTimes.length > 10) responseTimes.shift();
+  var m = new Date().getMinutes();
+  if (m !== currentMinute) { requestCounts.push(0); if (requestCounts.length > 10) requestCounts.shift(); currentMinute = m; }
+  requestCounts[requestCounts.length-1]++;
+  renderChart();
+  document.getElementById('stat-uptime').textContent = ms;
+  document.getElementById('chart-total').textContent = sessionRequests + ' total';
+}
+
+function renderChart() {
+  var max = Math.max.apply(null, requestCounts.concat([1]));
+  document.getElementById('chart-bars').innerHTML = requestCounts.map(function(v){
+    var h = Math.max(4, Math.round(v/max*80));
+    return '<div class="chart-bar" style="height:' + h + 'px" title="' + v + ' req"></div>';
+  }).join('');
+  document.getElementById('chart-labels').innerHTML = requestCounts.map(function(_, i){
+    var m = (currentMinute - (9-i) + 60) % 60;
+    return '<span class="chart-label">' + m + 'm</span>';
+  }).join('');
+  if (responseTimes.length > 0) {
+    var maxRt = Math.max.apply(null, responseTimes.concat([1]));
+    var slice = responseTimes.slice(-6);
+    document.getElementById('rt-bars').innerHTML = slice.map(function(rt, i){
+      var color = rt > 2000 ? 'var(--amber)' : 'var(--green)';
+      return '<div class="sparkbar-row">' +
+        '<div class="sparkbar-label">Req ' + (sessionRequests - (slice.length-1-i)) + '</div>' +
+        '<div class="sparkbar-track"><div class="sparkbar-fill" style="width:' + Math.round(rt/maxRt*100) + '%;background:' + color + ';"></div></div>' +
+        '<div class="sparkbar-val" style="color:' + color + '">' + rt + 'ms</div>' +
+        '</div>';
+    }).join('');
+  }
+}
+
+var tableRenderers = {
+  departments: function(rows){ return '<table><thead><tr><th>ID</th><th>Name</th><th>Short</th><th>HOD</th></tr></thead><tbody>' + rows.map(function(r){ return '<tr><td class="mono">'+(r.id||'—')+'</td><td>'+(r.name||'—')+'</td><td><span class="tag">'+(r.short_name||'—')+'</span></td><td>'+(r.hod||'—')+'</td></tr>'; }).join('') + '</tbody></table>'; },
+  faculty: function(rows){ return '<table><thead><tr><th>Name</th><th>Designation</th><th>Subject</th><th>Dept</th><th>Year</th><th>Div</th></tr></thead><tbody>' + rows.map(function(r){ return '<tr><td>'+(r.name||'—')+'</td><td><span class="tag">'+(r.designation||'—')+'</span></td><td>'+(r.subject||r.category||'—')+'</td><td>'+(r.department||'—')+'</td><td>'+(r.year||'—')+'</td><td>'+(r.division||'—')+'</td></tr>'; }).join('') + '</tbody></table>'; },
+  courses: function(rows){ return '<table><thead><tr><th>Name</th><th>Degree</th><th>Duration</th><th>Dept</th></tr></thead><tbody>' + rows.map(function(r){ return '<tr><td>'+(r.name||r.course_name||'—')+'</td><td><span class="tag">'+(r.degree||'—')+'</span></td><td>'+(r.duration||'—')+'</td><td>'+(r.department||'—')+'</td></tr>'; }).join('') + '</tbody></table>'; },
+  locations: function(rows){ return '<table><thead><tr><th>Name</th><th>Room #</th><th>Dept</th><th>Year</th><th>Type</th></tr></thead><tbody>' + rows.map(function(r){ return '<tr><td>'+(r.name||r.room_name||'—')+'</td><td class="mono">'+(r.room_number||r.id||'—')+'</td><td>'+(r.department||'—')+'</td><td>'+(r.year||'—')+'</td><td><span class="tag">'+(r.type||r.category||'—')+'</span></td></tr>'; }).join('') + '</tbody></table>'; },
+  placements: function(rows){ return '<table><thead><tr><th>Company</th><th>Package</th><th>Year</th><th>Students</th><th>Role</th></tr></thead><tbody>' + rows.map(function(r){ return '<tr><td>'+(r.company||r.recruiter||r.name||'—')+'</td><td style="color:var(--green);font-weight:600">'+(r.package||r.salary||'—')+'</td><td class="mono">'+(r.year||r.academic_year||'—')+'</td><td>'+(r.students||r.count||'—')+'</td><td>'+(r.role||r.designation||'—')+'</td></tr>'; }).join('') + '</tbody></table>'; },
+};
+
+async function loadTable(name) {
+  currentTable = name;
+  document.querySelectorAll('.data-tab').forEach(function(t){ t.classList.toggle('active', t.textContent.trim().toLowerCase() === name); });
+  var body = document.getElementById('data-table-body');
+  body.innerHTML = '<div class="loading-placeholder"><div class="spinner"></div>Loading ' + name + '…</div>';
+  try {
+    var r = await apiFetch('/' + name);
+    if (!r.ok) throw new Error(r.data.error || 'API error');
+    var arr = Array.isArray(r.data) ? r.data : [r.data];
+    body.innerHTML = (tableRenderers[name] || function(d){ return '<pre style="font-size:11px;color:var(--muted)">' + JSON.stringify(d,null,2) + '</pre>'; })(arr);
+  } catch(e) {
+    body.innerHTML = '<div class="loading-placeholder" style="color:var(--red)">⚠️ ' + e.message + '</div>';
+  }
+}
+
+async function refreshAll() {
+  var btn = document.getElementById('refresh-all-btn');
+  btn.disabled = true; btn.textContent = '↺ Loading…';
+  await Promise.all([loadHealth(), loadModels()]);
+  await loadTable(currentTable);
+  renderEndpointList();
+  btn.disabled = false; btn.textContent = '↺ Refresh';
+  toast('✅', 'Dashboard refreshed');
+}
+
+requestCounts = Array(10).fill(0);
+renderEndpointList();
+renderChart();
+refreshAll();
+pollServerActivity();
+setInterval(loadHealth, 30000);
+setInterval(pollServerActivity, 2500);
+</script>
+</body>
+</html>
