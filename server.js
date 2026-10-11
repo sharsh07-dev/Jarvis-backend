@@ -8,7 +8,7 @@ const { initializeApp, cert } = require("firebase-admin/app");
 const { getFirestore } = require("firebase-admin/firestore");
 
 // ----------------------------------------------------
-// Firebase Initialization (Supports Local File, Secret File, or Env Var)
+// Firebase Initialization (Supports Env Var, Render Secret File, or Local File)
 // ----------------------------------------------------
 let serviceAccount;
 if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
@@ -19,11 +19,27 @@ if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
     process.exit(1);
   }
 } else {
-  const serviceAccountPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH || "./serviceAccountKey.json";
-  try {
-    serviceAccount = require(serviceAccountPath);
-  } catch (err) {
-    console.error("FATAL: Could not load Firebase service account from:", serviceAccountPath);
+  const candidatePaths = [
+    process.env.FIREBASE_SERVICE_ACCOUNT_PATH,
+    "/etc/secrets/serviceAccountKey.json",
+    "./serviceAccountKey.json"
+  ].filter(Boolean);
+
+  let loaded = false;
+  for (const candidate of candidatePaths) {
+    try {
+      serviceAccount = require(candidate);
+      loaded = true;
+      break;
+    } catch (e) {
+      // try next path
+    }
+  }
+
+  if (!loaded) {
+    console.error("FATAL: Firebase service account credentials could not be loaded.");
+    console.error("Searched paths:", candidatePaths);
+    console.error("Please add FIREBASE_SERVICE_ACCOUNT_JSON to your Render Environment Variables, or create a Secret File named serviceAccountKey.json on Render.");
     process.exit(1);
   }
 }
@@ -154,7 +170,7 @@ async function retrieveEvidence(question) {
   const evidence = {};
 
   // 1. Campus Locations & Rooms (with deterministic room matching)
-  const hasLocationKeyword = /\b(room|classroom|lab|laboratory|tutorial|staff\s*room|where\s*is|locate|location|floor|building|se\s*a|te\s*a|te\s*c|second\s*year|third\s*year)\b/.test(q);
+  const hasLocationKeyword = /\b(room|rooms|classroom|classrooms|lab|labs|laboratory|laboratories|tutorial|staff\s*room|where\s*is|locate|location|locations|floor|building|se\s*a|te\s*a|te\s*c|second\s*year|third\s*year)\b/.test(q);
   const roomMatch = q.match(/\b(20[1-9]|21[0-9]|22[0-9])\b/);
 
   if (hasLocationKeyword || roomMatch) {
@@ -164,10 +180,15 @@ async function retrieveEvidence(question) {
       const matchedRooms = locations.filter(loc => String(loc.room) === roomNum || String(loc.id) === roomNum);
       evidence.locations = matchedRooms.length > 0 ? matchedRooms : locations;
     } else {
+      const isLabQuery = /\b(lab|labs|laboratory|laboratories)\b/.test(q);
+      const isClassroomQuery = /\b(classroom|classrooms|class)\b/.test(q);
       const matched = locations.filter(loc => {
         const name = (loc.name || "").toLowerCase();
         const type = (loc.type || "").toLowerCase();
-        return (name && q.includes(name)) || (type && q.includes(type));
+        const dept = (loc.department || "").toLowerCase();
+        if (isLabQuery && (type.includes("lab") || name.includes("lab"))) return true;
+        if (isClassroomQuery && type.includes("classroom")) return true;
+        return (name && q.includes(name)) || (type && q.includes(type)) || (dept && q.includes(dept));
       });
       evidence.locations = matched.length > 0 ? matched : locations;
     }
