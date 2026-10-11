@@ -174,6 +174,70 @@ const tests = [
       if (data.answer.length > 350) throw new Error(`Answer too verbose for OLED (${data.answer.length} chars)`);
       return `ESP32 payload valid: length ${data.answer.length} chars`;
     }
+  },
+  {
+    name: "15. Voice endpoint processing (Raw audio via /voice)",
+    run: async () => {
+      const sampleRate = 16000;
+      const numSamples = sampleRate * 1;
+      const buffer = Buffer.alloc(44 + numSamples * 2);
+      buffer.write("RIFF", 0);
+      buffer.writeUInt32LE(36 + numSamples * 2, 4);
+      buffer.write("WAVE", 8);
+      buffer.write("fmt ", 12);
+      buffer.writeUInt32LE(16, 16);
+      buffer.writeUInt16LE(1, 20);
+      buffer.writeUInt16LE(1, 22);
+      buffer.writeUInt32LE(sampleRate, 24);
+      buffer.writeUInt32LE(sampleRate * 2, 28);
+      buffer.writeUInt16LE(2, 32);
+      buffer.writeUInt16LE(16, 34);
+      buffer.write("data", 36);
+      buffer.writeUInt32LE(numSamples * 2, 40);
+
+      const res = await fetch(`${BASE_URL}/voice`, {
+        method: "POST",
+        headers: { "Content-Type": "audio/wav" },
+        body: buffer
+      });
+      if (res.status !== 200) throw new Error(`Expected 200, got ${res.status}`);
+      const data = await res.json();
+      if (!data.question || !data.answer) throw new Error(`Expected question and answer: ${JSON.stringify(data)}`);
+      return `Recognized: "${data.question}", Answer: "${data.answer.slice(0, 50)}..."`;
+    }
+  },
+  {
+    name: "16. Voice endpoint processing (Multipart file via /ask-voice)",
+    run: async () => {
+      const sampleRate = 16000;
+      const numSamples = sampleRate * 1;
+      const buffer = Buffer.alloc(44 + numSamples * 2);
+      buffer.write("RIFF", 0);
+      buffer.writeUInt32LE(36 + numSamples * 2, 4);
+      buffer.write("WAVE", 8);
+      buffer.write("fmt ", 12);
+      buffer.writeUInt32LE(16, 16);
+      buffer.writeUInt16LE(1, 20);
+      buffer.writeUInt16LE(1, 22);
+      buffer.writeUInt32LE(sampleRate, 24);
+      buffer.writeUInt32LE(sampleRate * 2, 28);
+      buffer.writeUInt16LE(2, 32);
+      buffer.writeUInt16LE(16, 34);
+      buffer.write("data", 36);
+      buffer.writeUInt32LE(numSamples * 2, 40);
+
+      const formData = new FormData();
+      formData.append("file", new Blob([buffer], { type: "audio/wav" }), "test.wav");
+
+      const res = await fetch(`${BASE_URL}/ask-voice`, {
+        method: "POST",
+        body: formData
+      });
+      if (res.status !== 200) throw new Error(`Expected 200, got ${res.status}`);
+      const data = await res.json();
+      if (!data.question || !data.answer) throw new Error(`Expected question and answer: ${JSON.stringify(data)}`);
+      return `Multipart OK - Recognized: "${data.question}"`;
+    }
   }
 ];
 
