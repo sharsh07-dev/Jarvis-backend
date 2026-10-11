@@ -448,6 +448,12 @@ async function generateSpeechWithGroq(text) {
   if (!response.ok) {
     const errorBody = await response.text();
     console.error("GROQ SPEECH ERROR:", response.status, errorBody);
+    if (errorBody.includes("model_terms_required")) {
+      const err = new Error("Groq Speech requires 1-time terms acceptance: visit https://console.groq.com/playground?model=canopylabs%2Forpheus-v1-english and click 'Accept Terms'.");
+      err.code = "MODEL_TERMS_REQUIRED";
+      err.url = "https://console.groq.com/playground?model=canopylabs%2Forpheus-v1-english";
+      throw err;
+    }
     throw new Error(`Groq speech generation failed (${response.status}): ${errorBody}`);
   }
 
@@ -744,6 +750,12 @@ app.post("/speech", async (req, res) => {
     });
   } catch (error) {
     console.error("SPEECH ENDPOINT ERROR:", error.message);
+    if (error.code === "MODEL_TERMS_REQUIRED") {
+      return res.status(403).json({
+        error: error.message,
+        terms_url: error.url
+      });
+    }
     res.status(500).json({
       error: error.message || "Failed to synthesize speech."
     });
